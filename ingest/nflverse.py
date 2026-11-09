@@ -5,10 +5,12 @@ nflverse GitHub Actions."""
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import nflreadpy as nfl
+import nflreadpy as _nflreadpy
 import polars as pl
 import psycopg
 
@@ -17,6 +19,33 @@ from .scoring import draftkings_nfl
 
 log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
+
+def _retry[T](fn: Callable[[], T], what: str, attempts: int = 5, base_delay: float = 5.0) -> T:
+    """GitHub's release CDN intermittently returns 5xx / times out. Retry with
+    exponential backoff (5s, 10s, 20s, 40s) before giving up."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # nflreadpy wraps everything in ConnectionError/ValueError
+            if i == attempts - 1:
+                raise
+            delay = base_delay * (2**i)
+            log.warning("%s failed (%s); retry %d/%d in %.0fs", what, e, i + 1, attempts - 1, delay)
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+class _NFL:
+    """Proxy over nflreadpy that wraps every load_* call in _retry."""
+
+    def __getattr__(self, name: str):
+        target = getattr(_nflreadpy, name)
+        if not name.startswith("load_"):
+            return target
+        return lambda *a, **kw: _retry(lambda: target(*a, **kw), f"nflreadpy.{name}{a}")
+
+
+nfl = _NFL()
 
 # nflverse uses a few legacy abbreviations; normalise to current ones.
 TEAM_FIX = {"OAK": "LV", "SD": "LAC", "STL": "LA", "LAR": "LA", "WSH": "WAS", "JAC": "JAX"}
