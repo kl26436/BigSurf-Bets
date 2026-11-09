@@ -6,7 +6,7 @@ on:
   schedule:
     - cron: "0 11 * * 2"    # Tue 06:00 ET — full stats/injuries refresh after MNF
     - cron: "0 11 * * 5"    # Fri 06:00 ET — final injury reports + TNF stats
-    - cron: "0 3  * * 7"    # Sat 22:00 ET — odds snapshot (opening-ish lines)
+    - cron: "0 3  * * 0"    # Sat 22:00 ET (Sun 03:00 UTC) — odds snapshot
     - cron: "0 15 * * 0"    # Sun 10:00 ET — odds + Sleeper status (pre-inactives)
     - cron: "30 16 * * 0"   # Sun 11:30 ET — Sleeper status (inactives drop ~11:30 ET for 1pm)
   workflow_dispatch:
@@ -56,7 +56,8 @@ jobs:
             league) league=true ;;
             auto)
               if [[ "$dow" == "2" || "$dow" == "5" ]]; then stats=true; league=true; fi
-              if [[ "$dow" == "6" || "$dow" == "7" ]]; then odds=true; status=true; fi
+              # Sunday (dow=7 in date +%u) hosts all three weekend crons
+              if [[ "$dow" == "7" ]]; then odds=true; status=true; fi
               if [[ "$dow" == "7" && "$hour" == "16" ]]; then odds=false; fi
               ;;
           esac
