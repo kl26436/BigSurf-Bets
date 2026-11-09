@@ -69,7 +69,7 @@ def snapshot_status(conn: psycopg.Connection, sport: str = "nfl") -> int:
                     },
                 }
             )
-        df = pl.DataFrame(rows)
+        df = pl.DataFrame(rows, infer_schema_length=None)
         run.rows = insert_df(conn, "player_status_snapshots", df)
 
         # map sleeper ids onto our players table

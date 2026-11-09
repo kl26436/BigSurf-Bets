@@ -26,3 +26,13 @@ def test_total_line_from_bookmaker_outcome_id():
 def test_player_prop():
     m = _parse_outcome(MKTS[900], 9001, {"bookmakerOutcomeId": "72.5/over", "playerName": "CeeDee Lamb"}, "DAL", "PHI")
     assert m == ("player_prop", "full", "over", "player_receiving_yards", 72.5)
+
+
+def test_dataframe_with_late_strings_in_nullable_column():
+    """Regression: prop_type is None for 100+ rows before the first prop appears."""
+    import polars as pl
+
+    rows = [{"a": i, "prop_type": None} for i in range(150)] + [{"a": 150, "prop_type": "pass_yards"}]
+    df = pl.DataFrame(rows, infer_schema_length=None)
+    assert df.schema["prop_type"] == pl.Utf8
+    assert df["prop_type"].null_count() == 150

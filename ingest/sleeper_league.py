@@ -128,7 +128,7 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
                     "raw": r,
                 }
             )
-        run.rows = insert_df(conn, "fantasy_roster_snapshots", pl.DataFrame(rows))
+        run.rows = insert_df(conn, "fantasy_roster_snapshots", pl.DataFrame(rows, infer_schema_length=None))
         run.detail.update(league=lg.get("name"), week=week, rosters=len(rows))
         conn.commit()
         return run.rows

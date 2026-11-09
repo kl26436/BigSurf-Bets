@@ -52,7 +52,7 @@ class OddsPapi:
         self._last = time.monotonic()
         self.calls += 1
         if r.status_code >= 400:
-            raise RuntimeError(f"{r.status_code} from {path}: {r.text[:300]}")
+            raise RuntimeError(f"{r.status_code} from {path}: {r.text[:4000]}")
         return r.json()
 
     def sports(self) -> list[dict]:
@@ -167,7 +167,7 @@ def snapshot_upcoming(
             try:
                 data = api.odds_by_tournament(tid, book)
             except Exception as e:  # unknown slug / not entitled — keep going with the others
-                errors[book] = str(e)[:200]
+                errors[book] = str(e)[:4000]
                 log.warning("oddspapi %s: %s", book, e)
                 continue
             captured = datetime.now(UTC)
@@ -205,7 +205,7 @@ def snapshot_upcoming(
                                     )
                                 )
         if rows:
-            run.rows = insert_df(conn, "odds_snapshots", pl.DataFrame(rows))
+            run.rows = insert_df(conn, "odds_snapshots", pl.DataFrame(rows, infer_schema_length=None))
         unmatched = sum(1 for m in fx_meta.values() if m["game_id"] is None)
         run.detail.update(
             fixtures=len(fixtures), unmatched_fixtures=unmatched, api_calls=api.calls,

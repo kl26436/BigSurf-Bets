@@ -29,7 +29,7 @@ class OddsLink:
         r = self.h.get(path, params={k: v for k, v in params.items() if v is not None})
         self.calls += 1
         if r.status_code >= 400:
-            raise RuntimeError(f"{r.status_code} from {r.url.path}: {r.text[:300]}")
+            raise RuntimeError(f"{r.status_code} from {r.url.path}: {r.text[:4000]}")
         return r.json()
 
     def sports(self):
@@ -93,7 +93,7 @@ def snapshot_upcoming(conn: psycopg.Connection, api_key: str, sport: str = "nfl"
                     )
                 )
         if rows:
-            run.rows = insert_df(conn, "odds_snapshots", pl.DataFrame(rows))
+            run.rows = insert_df(conn, "odds_snapshots", pl.DataFrame(rows, infer_schema_length=None))
         run.detail.update(events=len(events), api_calls=api.calls)
         conn.commit()
         return run.rows
