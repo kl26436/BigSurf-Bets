@@ -22,9 +22,23 @@ log = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "supabase" / "migrations"
 
 
+def _check_url(db_url: str) -> None:
+    """Supabase's direct host (db.<ref>.supabase.co) is IPv6-only on the free
+    plan and unreachable from GitHub Actions runners. Fail with a useful message
+    instead of 'Network is unreachable'."""
+    if ".supabase.co" in db_url and "pooler.supabase.com" not in db_url:
+        raise RuntimeError(
+            "SUPABASE_DB_URL points at the direct connection host (db.<ref>.supabase.co), "
+            "which is IPv6-only and fails from GitHub Actions. In the Supabase dashboard "
+            "click Connect → choose 'Session pooler' (host aws-0-<region>.pooler.supabase.com, "
+            "port 5432) and use that URI instead."
+        )
+
+
 @contextmanager
 def connect(db_url: str) -> Iterator[psycopg.Connection]:
-    with psycopg.connect(db_url, autocommit=False) as conn:
+    _check_url(db_url)
+    with psycopg.connect(db_url, autocommit=False, connect_timeout=20) as conn:
         yield conn
 
 
