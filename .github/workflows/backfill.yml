@@ -1,0 +1,40 @@
+name: Backfill (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Seasons to load, e.g. 2021-2026 or 2025,2026"
+        required: true
+        default: "2021-2026"
+      migrate:
+        description: "Apply SQL migrations first"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Migrate
+        if: ${{ inputs.migrate }}
+        run: bsb db migrate
+      - name: Backfill nflverse
+        run: bsb nfl backfill --seasons "${{ inputs.seasons }}"
+      - name: Sleeper status snapshot
+        run: bsb sleeper status
+      - name: Row counts
+        run: bsb db ping

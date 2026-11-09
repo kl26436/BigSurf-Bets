@@ -1,0 +1,90 @@
+name: Weekly ingest
+
+# All times UTC. NFL week: TNF Thu, Sun 1pm/4pm/8pm ET, MNF Mon.
+# nflverse stats finalize overnight after each game day.
+on:
+  schedule:
+    - cron: "0 11 * * 2"    # Tue 06:00 ET — full stats/injuries refresh after MNF
+    - cron: "0 11 * * 5"    # Fri 06:00 ET — final injury reports + TNF stats
+    - cron: "0 3  * * 7"    # Sat 22:00 ET — odds snapshot (opening-ish lines)
+    - cron: "0 15 * * 0"    # Sun 10:00 ET — odds + Sleeper status (pre-inactives)
+    - cron: "30 16 * * 0"   # Sun 11:30 ET — Sleeper status (inactives drop ~11:30 ET for 1pm)
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job"
+        type: choice
+        options: [all, stats, status, odds, league]
+        default: all
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+  ODDSPAPI_API_KEY: ${{ secrets.ODDSPAPI_API_KEY }}
+  ODDSLINK_API_KEY: ${{ secrets.ODDSLINK_API_KEY }}
+  SLEEPER_LEAGUE_ID: ${{ vars.SLEEPER_LEAGUE_ID }}
+  SLEEPER_USERNAME: ${{ vars.SLEEPER_USERNAME }}
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Decide what to run
+        id: plan
+        shell: bash
+        run: |
+          job="${{ inputs.job || 'auto' }}"
+          dow=$(date -u +%u)   # 1=Mon..7=Sun
+          hour=$(date -u +%H)
+          stats=false; status=false; odds=false; league=false
+          case "$job" in
+            all)    stats=true; status=true; odds=true; league=true ;;
+            stats)  stats=true ;;
+            status) status=true ;;
+            odds)   odds=true ;;
+            league) league=true ;;
+            auto)
+              if [[ "$dow" == "2" || "$dow" == "5" ]]; then stats=true; league=true; fi
+              if [[ "$dow" == "6" || "$dow" == "7" ]]; then odds=true; status=true; fi
+              if [[ "$dow" == "7" && "$hour" == "16" ]]; then odds=false; fi
+              ;;
+          esac
+          echo "stats=$stats"   >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "odds=$odds"     >> "$GITHUB_OUTPUT"
+          echo "league=$league" >> "$GITHUB_OUTPUT"
+
+      - name: nflverse weekly refresh
+        if: steps.plan.outputs.stats == 'true'
+        run: bsb nfl weekly
+
+      - name: Sleeper status snapshot
+        if: steps.plan.outputs.status == 'true'
+        run: bsb sleeper status
+
+      - name: Sleeper league snapshot
+        if: steps.plan.outputs.league == 'true' && env.SLEEPER_LEAGUE_ID != ''
+        run: bsb sleeper league "$SLEEPER_LEAGUE_ID" --username "$SLEEPER_USERNAME"
+
+      - name: Odds — OddsPapi
+        if: steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
+        run: bsb odds oddspapi --days 7
+
+      - name: Odds — OddsLink
+        if: steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
+        run: bsb odds oddslink
+
+      - name: Row counts
+        if: always()
+        run: bsb db ping

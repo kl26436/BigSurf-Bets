@@ -1,0 +1,32 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Data caches (nflverse parquet, odds snapshots) — too big for git
+data/
+*.parquet
+*.csv
+!supabase/seed/*.csv
+
+# Node / PWA (Phase 3+)
+node_modules/
+.firebase/
+firebase-debug.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
