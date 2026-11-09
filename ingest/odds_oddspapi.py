@@ -1,44 +1,62 @@
-"""OddsPapi client (free tier: 250 req/month; one request = full board for a
-fixture incl. Pinnacle). Base: https://v5.oddspapi.io/en  Auth: X-API-Key.
+"""OddsPapi v4 client (free tier: 250 req/month). Kevin's key is a v4 key —
+v5 (docs.oddspapi.io) rejects it with invalid_api_key.
 
-Budget plan: ~16 NFL games/week × 2 snapshots (Sat night + Sun morning) ≈ 32
-req/week ≈ 140/month, leaving headroom for props on showdown slates.
+Base: https://api.oddspapi.io/v4   Auth: ?apiKey=   Docs: https://oddspapi.io/en/docs
 
-Response shape (fixtures/odds):
-  {"odds": {"<book>": {"<fixtureId>:<book>:<outcomeId>:<playerId>": {"price":..}}},
-   "bookmakers": {...}}
-Market/handicap resolution requires GET /markets?outcomeIds=... — we cache that."""
+One snapshot = 3 discovery calls + 1 call per bookmaker:
+  /tournaments?sportId=14            → NFL tournamentId
+  /fixtures?tournamentId=..&from&to  → fixtureId, team names, startTime
+  /markets                           → marketId → name/type/period/playerProp
+  /odds-by-tournaments?bookmaker=B&tournamentIds=T   (×N bookmakers)
+
+Odds nest as bookmakerOdds→{book}→markets→{marketId}→outcomes→{outcomeId}→
+players→{idx}→{price, priceAmerican, playerName, mainLine, active,
+bookmakerOutcomeId e.g. "3.5/over"}.
+
+Endpoints have 0.5–2s cooldowns, so we sleep between calls."""
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import re
+import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import polars as pl
 import psycopg
 
 from .db import RunLogger, insert_df
-from .odds_common import canonical_book, decimal_to_american, match_game_id, team_abbr
+from .odds_common import canonical_book, match_game_id, team_abbr
 
 log = logging.getLogger(__name__)
-BASE = "https://v5.oddspapi.io/en"
+BASE = "https://api.oddspapi.io/v4"
 SPORT_ID_AMERICAN_FOOTBALL = 14
+COOLDOWN_S = 2.1  # longest documented endpoint cooldown is 2000ms
 
 
 class OddsPapi:
     def __init__(self, api_key: str):
-        self.h = httpx.Client(base_url=BASE, headers={"X-API-Key": api_key}, timeout=60)
+        self.key = api_key
+        self.h = httpx.Client(base_url=BASE, timeout=60)
         self.calls = 0
+        self._last = 0.0
 
     def get(self, path: str, **params):
-        r = self.h.get(path, params={k: v for k, v in params.items() if v is not None})
+        wait = COOLDOWN_S - (time.monotonic() - self._last)
+        if wait > 0:
+            time.sleep(wait)
+        q = {k: v for k, v in params.items() if v is not None}
+        q["apiKey"] = self.key
+        r = self.h.get(path, params=q)
+        self._last = time.monotonic()
         self.calls += 1
         if r.status_code >= 400:
-            raise RuntimeError(f"{r.status_code} from {r.url.path}: {r.text[:300]}")
+            raise RuntimeError(f"{r.status_code} from {path}: {r.text[:300]}")
         return r.json()
 
-    # --- discovery (free-ish; still counts toward quota, so cache results) ---
+    def sports(self) -> list[dict]:
+        return self.get("/sports")
 
     def bookmakers(self) -> list[dict]:
         return self.get("/bookmakers")
@@ -46,48 +64,74 @@ class OddsPapi:
     def tournaments(self, sport_id: int = SPORT_ID_AMERICAN_FOOTBALL) -> list[dict]:
         return self.get("/tournaments", sportId=sport_id)
 
-    def nfl_tournament_id(self) -> str:
+    def nfl_tournament_id(self) -> int:
         for t in self.tournaments():
-            name = (t.get("name") or t.get("tournamentName") or "").lower()
-            if name == "nfl" or "national football league" in name:
-                return str(t.get("tournamentId") or t.get("id"))
-        raise RuntimeError("NFL tournament not found in OddsPapi sportId=14 list")
+            name = (t.get("tournamentName") or "").lower()
+            slug = (t.get("tournamentSlug") or "").lower()
+            if slug == "nfl" or name == "nfl" or "national football league" in name:
+                return int(t["tournamentId"])
+        raise RuntimeError("NFL not found in OddsPapi sportId=14 tournaments")
 
-    def fixtures(self, tournament_id: str, start_from: int | None = None, start_to: int | None = None):
+    def fixtures(self, tournament_id: int, start: datetime, end: datetime) -> list[dict]:
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
         return self.get(
-            "/fixtures", tournamentId=tournament_id, startTimeFrom=start_from, startTimeTo=start_to
+            "/fixtures", tournamentId=tournament_id,
+            **{"from": start.strftime(fmt), "to": end.strftime(fmt)},
         )
 
-    def fixture_odds(self, fixture_id: str, bookmakers: list[str] | None = None) -> dict:
-        return self.get(
-            "/fixtures/odds", fixtureId=fixture_id,
-            bookmakers=",".join(bookmakers) if bookmakers else None,
-        )
+    def markets(self) -> dict[int, dict]:
+        return {int(m["marketId"]): m for m in self.get("/markets")}
 
-    def markets_for_outcomes(self, outcome_ids: list[str]) -> dict[str, dict]:
-        out: dict[str, dict] = {}
-        for i in range(0, len(outcome_ids), 100):
-            for m in self.get("/markets", outcomeIds=",".join(outcome_ids[i : i + 100])):
-                for o in m.get("outcomes", []) or []:
-                    out[str(o.get("outcomeId"))] = {**m, "outcome": o}
-        return out
+    def odds_by_tournament(self, tournament_id: int, bookmaker: str) -> list[dict]:
+        return self.get("/odds-by-tournaments", tournamentIds=tournament_id, bookmaker=bookmaker)
 
 
-def _classify(mkt: dict) -> tuple[str, str, str, str | None]:
-    """→ (market, period, outcome, prop_type)"""
-    mt = (mkt.get("marketType") or mkt.get("name") or "").lower()
-    period = (mkt.get("period") or "full").lower()
-    oname = (mkt.get("outcome", {}).get("outcomeName") or "").lower()
-    if mkt.get("playerProp"):
-        outcome = "over" if "over" in oname or "higher" in oname else "under" if "under" in oname or "lower" in oname else "yes" if "yes" in oname else oname
-        return "player_prop", period, outcome, mt.replace(" ", "_")
-    if "handicap" in mt or "spread" in mt:
-        return "spread", period, "home" if oname in ("1", "home") else "away", None
-    if "total" in mt or "over/under" in mt:
-        return "total", period, "over" if "over" in oname else "under", None
-    if mt in ("1x2", "moneyline", "money line", "winner", "match winner", "h2h"):
-        return "moneyline", period, "home" if oname in ("1", "home") else "away", None
-    return mt.replace(" ", "_"), period, oname, None
+# ---------------------------------------------------------------------------
+
+_LINE_RE = re.compile(r"^(-?\d+(?:\.\d+)?)/(.+)$")
+
+
+def _parse_outcome(
+    mkt: dict | None, outcome_id: int, entry: dict, home: str | None, away: str | None
+) -> tuple[str, str, str, str | None, float | None]:
+    """→ (market, period, outcome, prop_type, line)"""
+    mtype = (mkt or {}).get("marketType", "") or ""
+    mname = (mkt or {}).get("marketName", "") or ""
+    period = ((mkt or {}).get("period") or "fulltime").lower()
+    period = {"fulltime": "full", "1st half": "1h", "2nd half": "2h"}.get(period, period)
+    oname = ""
+    for o in (mkt or {}).get("outcomes", []) or []:
+        if int(o.get("outcomeId", -1)) == outcome_id:
+            oname = (o.get("outcomeName") or "").lower()
+            break
+    # line: prefer the bookmaker outcome id ("3.5/over", "-2.5/home"), else market handicap
+    line = None
+    boid = str(entry.get("bookmakerOutcomeId") or "")
+    m = _LINE_RE.match(boid)
+    if m:
+        line = float(m.group(1))
+        if not oname:
+            oname = m.group(2).lower()
+    elif (mkt or {}).get("handicap") not in (None, 0):
+        line = float(mkt["handicap"])
+
+    def side(o: str) -> str:
+        if o in ("1", "home") or o == (home or "").lower():
+            return "home"
+        if o in ("2", "away") or o == (away or "").lower():
+            return "away"
+        return o
+
+    if (mkt or {}).get("playerProp"):
+        outcome = "over" if "over" in oname else "under" if "under" in oname else oname or "yes"
+        return "player_prop", period, outcome, mname.lower().replace(" ", "_"), line
+    if mtype in ("1x2", "moneyline", "12", "winner") or "result" in mname.lower() and line is None:
+        return "moneyline", period, side(oname), None, None
+    if mtype in ("handicap", "spread") or "handicap" in mname.lower() or "spread" in mname.lower():
+        return "spread", period, side(oname), None, line
+    if mtype == "totals" or "over under" in mname.lower() or "total" in mname.lower():
+        return "total", period, "over" if "over" in oname else "under" if "under" in oname else oname, None, line
+    return (mtype or mname.lower().replace(" ", "_") or f"market_{(mkt or {}).get('marketId', '?')}"), period, oname, None, line
 
 
 def snapshot_upcoming(
@@ -97,53 +141,75 @@ def snapshot_upcoming(
     with RunLogger(conn, "odds.oddspapi") as run:
         tid = api.nfl_tournament_id()
         now = datetime.now(UTC)
-        fx = api.fixtures(tid, start_from=int(now.timestamp()), start_to=int(now.timestamp()) + days * 86400)
-        rows: list[dict] = []
-        for f in fx:
-            fid = str(f.get("fixtureId") or f.get("id"))
-            parts = f.get("participants") or f.get("teams") or []
-            home = away = None
-            for p in parts:
-                abbr = team_abbr(p.get("name") or p.get("participantName"))
-                if (p.get("position") or p.get("side") or "").lower().startswith("h") or p.get("isHome"):
-                    home = abbr
-                else:
-                    away = abbr
-            start = f.get("startTime")
-            start_dt = datetime.fromtimestamp(start / 1000 if start and start > 1e11 else start, tz=UTC) if start else None
-            gid = match_game_id(conn, home, away, start_dt, sport)
+        fixtures = {str(f["fixtureId"]): f for f in api.fixtures(tid, now, now + timedelta(days=days))}
+        mkts = api.markets()
 
-            board = api.fixture_odds(fid, bookmakers)
-            odds = board.get("odds") or {}
-            outcome_ids = sorted({k.split(":")[2] for bk in odds.values() for k in bk})
-            mkts = api.markets_for_outcomes(outcome_ids) if outcome_ids else {}
+        # map provider fixtures → our games once
+        fx_meta: dict[str, dict] = {}
+        for fid, f in fixtures.items():
+            # OddsPapi lists home as participant1 for US sports? Not guaranteed — match both orders.
+            p1 = team_abbr(f.get("participant1Name")) or (f.get("participant1Abbr") or "").upper() or None
+            p2 = team_abbr(f.get("participant2Name")) or (f.get("participant2Abbr") or "").upper() or None
+            start = f.get("startTime")
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")) if start else None
+            gid = match_game_id(conn, p1, p2, start_dt, sport)
+            home, away = p1, p2
+            if gid is None:
+                gid = match_game_id(conn, p2, p1, start_dt, sport)
+                if gid is not None:
+                    home, away = p2, p1
+            fx_meta[fid] = {"game_id": gid, "home": home, "away": away}
+
+        rows: list[dict] = []
+        errors: dict[str, str] = {}
+        for book in bookmakers:
+            cb = canonical_book(book) or book
+            try:
+                data = api.odds_by_tournament(tid, book)
+            except Exception as e:  # unknown slug / not entitled — keep going with the others
+                errors[book] = str(e)[:200]
+                log.warning("oddspapi %s: %s", book, e)
+                continue
             captured = datetime.now(UTC)
-            for book, entries in odds.items():
-                cb = canonical_book(book)
-                if not cb:
-                    continue
-                for oid, o in entries.items():
-                    if not o.get("active", True):
-                        continue
-                    _, _, outcome_id, player_id = oid.split(":")
-                    mkt = mkts.get(outcome_id, {})
-                    market, period, outcome, prop = _classify(mkt)
-                    price = float(o["price"])
-                    rows.append(
-                        dict(
-                            sport=sport, captured_at=captured, provider="oddspapi",
-                            provider_fixture_id=fid, game_id=gid, bookmaker=cb, market=market,
-                            period=period, player_id=None,  # mapped later via players table
-                            prop_type=prop, outcome=outcome,
-                            line=mkt.get("outcome", {}).get("handicap") or mkt.get("handicap"),
-                            price_decimal=price, price_american=decimal_to_american(price),
-                            is_live=False,
-                            raw={"oddsId": oid, "oddspapi_player_id": player_id if player_id != "0" else None,
-                                 "market": mkt.get("marketType") or mkt.get("name"), "changedAt": o.get("changedAt")},
-                        )
-                    )
+            for f in data:
+                fid = str(f.get("fixtureId"))
+                meta = fx_meta.get(fid) or {"game_id": None, "home": None, "away": None}
+                for bslug, bo in (f.get("bookmakerOdds") or {}).items():
+                    for mid, m in (bo.get("markets") or {}).items():
+                        mkt = mkts.get(int(mid))
+                        for oid, o in (m.get("outcomes") or {}).items():
+                            for _idx, e in (o.get("players") or {}).items():
+                                if not e.get("active", True) or e.get("price") in (None, 0):
+                                    continue
+                                market, period, outcome, prop, line = _parse_outcome(
+                                    mkt, int(oid), e, meta["home"], meta["away"]
+                                )
+                                price = float(e["price"])
+                                pa = e.get("priceAmerican")
+                                rows.append(
+                                    dict(
+                                        sport=sport, captured_at=captured, provider="oddspapi",
+                                        provider_fixture_id=fid, game_id=meta["game_id"],
+                                        bookmaker=cb, market=market, period=period,
+                                        player_id=None, prop_type=prop, outcome=outcome, line=line,
+                                        price_decimal=price,
+                                        price_american=int(str(pa).replace("+", "")) if pa not in (None, "") else None,
+                                        is_live=False,
+                                        raw={
+                                            "marketId": int(mid), "outcomeId": int(oid),
+                                            "bookmakerOutcomeId": e.get("bookmakerOutcomeId"),
+                                            "playerName": e.get("playerName"),
+                                            "mainLine": e.get("mainLine"), "limit": e.get("limit"),
+                                            "changedAt": e.get("changedAt"), "book_raw": bslug,
+                                        },
+                                    )
+                                )
         if rows:
             run.rows = insert_df(conn, "odds_snapshots", pl.DataFrame(rows))
-        run.detail.update(fixtures=len(fx), api_calls=api.calls, books=bookmakers)
+        unmatched = sum(1 for m in fx_meta.values() if m["game_id"] is None)
+        run.detail.update(
+            fixtures=len(fixtures), unmatched_fixtures=unmatched, api_calls=api.calls,
+            books=bookmakers, book_errors=errors or None,
+        )
         conn.commit()
         return run.rows

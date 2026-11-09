@@ -27,17 +27,19 @@ def probe_oddspapi():
         return
     api = OddsPapi(key)
     books = api.bookmakers()
-    slugs = sorted({(b.get("bookmaker") or b.get("slug") or b.get("name") or "").lower() for b in books})
-    print(f"\n== OddsPapi: {len(slugs)} bookmakers on your key ==")
-    hits = [s for s in slugs if any(w in s for w in WANT)]
-    print("matches:", hits)
-    print("first 40:", slugs[:40])
+    slugs = sorted({str(b.get("bookmakerSlug") or b.get("slug") or b.get("bookmaker") or "").lower() for b in books})
+    print(f"\n== OddsPapi v4: {len(slugs)} bookmakers on your key ==")
+    print("matches:", [s for s in slugs if any(w in s for w in WANT)])
+    print("sample bookmaker record:", json.dumps(books[0])[:300] if books else None)
     tid = api.nfl_tournament_id()
     print("NFL tournamentId:", tid)
-    fx = api.fixtures(tid)
-    print(f"upcoming NFL fixtures: {len(fx)}")
+    from datetime import UTC, datetime, timedelta
+
+    fx = api.fixtures(tid, datetime.now(UTC), datetime.now(UTC) + timedelta(days=7))
+    print(f"upcoming NFL fixtures (7d): {len(fx)}")
     if fx:
-        print("sample fixture:", json.dumps(fx[0], indent=1)[:800])
+        f = fx[0]
+        print("sample:", {k: f.get(k) for k in ("fixtureId", "participant1Name", "participant1Abbr", "participant2Name", "participant2Abbr", "startTime", "hasOdds")})
     print("api calls used:", api.calls)
 
 
