@@ -28,7 +28,8 @@ class OddsLink:
     def get(self, path: str, **params):
         r = self.h.get(path, params={k: v for k, v in params.items() if v is not None})
         self.calls += 1
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(f"{r.status_code} from {r.url.path}: {r.text[:300]}")
         return r.json()
 
     def sports(self):
