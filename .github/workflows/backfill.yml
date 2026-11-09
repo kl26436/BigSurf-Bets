@@ -11,6 +11,10 @@ on:
         description: "Apply SQL migrations first"
         type: boolean
         default: true
+      only:
+        description: "Optional subset: teams,players,schedules,player_stats,injuries"
+        required: false
+        default: ""
 
 concurrency:
   group: ingest
@@ -33,7 +37,12 @@ jobs:
         if: ${{ inputs.migrate }}
         run: bsb db migrate
       - name: Backfill nflverse
-        run: bsb nfl backfill --seasons "${{ inputs.seasons }}"
+        run: |
+          if [ -n "${{ inputs.only }}" ]; then
+            bsb nfl backfill --seasons "${{ inputs.seasons }}" --only "${{ inputs.only }}"
+          else
+            bsb nfl backfill --seasons "${{ inputs.seasons }}"
+          fi
       - name: Sleeper status snapshot
         if: always()
         run: bsb sleeper status

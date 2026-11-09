@@ -57,6 +57,14 @@ class _NFL:
 
 nfl = _NFL()
 
+
+def _load_by_season(loader: Callable[..., pl.DataFrame], seasons: list[int], **kw) -> pl.DataFrame:
+    """Fetch one season per call so a CDN failure on one file only retries that
+    file, instead of restarting the whole multi-season download."""
+    frames = [loader(s, **kw) for s in seasons]
+    frames = [f for f in frames if not f.is_empty()]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
 # nflverse uses a few legacy abbreviations; normalise to current ones.
 TEAM_FIX = {"OAK": "LV", "SD": "LAC", "STL": "LA", "LAR": "LA", "WSH": "WAS", "JAC": "JAX"}
 
@@ -117,7 +125,7 @@ def ingest_players(conn: psycopg.Connection, sport: str = "nfl") -> int:
 
 def ingest_schedules(conn: psycopg.Connection, seasons: list[int], sport: str = "nfl") -> int:
     with RunLogger(conn, "nflverse.schedules") as run:
-        raw = nfl.load_schedules(seasons)
+        raw = _load_by_season(nfl.load_schedules, seasons)
         # gameday 'YYYY-MM-DD' + gametime 'HH:MM' (ET) → UTC timestamptz
         kickoff = (
             pl.concat_str([pl.col("gameday"), pl.lit(" "), pl.col("gametime").fill_null("13:00")])
@@ -156,7 +164,7 @@ def ingest_player_week_stats(
     conn: psycopg.Connection, seasons: list[int], sport: str = "nfl"
 ) -> int:
     with RunLogger(conn, "nflverse.player_stats") as run:
-        raw = nfl.load_player_stats(seasons, summary_level="week")
+        raw = _load_by_season(nfl.load_player_stats, seasons, summary_level="week")
         raw = raw.filter(pl.col("player_id").is_not_null())
         raw = raw.with_columns(draftkings_nfl())
         df = raw.select(
@@ -213,7 +221,7 @@ def ingest_injury_reports(
     conn: psycopg.Connection, seasons: list[int], sport: str = "nfl"
 ) -> int:
     with RunLogger(conn, "nflverse.injuries") as run:
-        raw = nfl.load_injuries(seasons).filter(pl.col("gsis_id").is_not_null())
+        raw = _load_by_season(nfl.load_injuries, seasons).filter(pl.col("gsis_id").is_not_null())
         # one row per player-week: keep the latest-looking report (last row wins)
         raw = raw.unique(subset=["season", "week", "gsis_id"], keep="last")
         df = raw.select(

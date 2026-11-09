@@ -79,22 +79,31 @@ def _run_steps(conn, steps: list[tuple[str, callable]]) -> None:
 
 
 @nfl_app.command()
-def backfill(seasons: str = typer.Option("2021-2026", help="e.g. 2021-2026 or 2024,2025")):
+def backfill(
+    seasons: str = typer.Option("2021-2026", help="e.g. 2021-2026 or 2024,2025"),
+    only: str = typer.Option(
+        None, help="comma-separated subset of: teams,players,schedules,player_stats,injuries"
+    ),
+):
     """Teams, players, schedules, weekly stats, injuries for the given seasons."""
     from . import nflverse as nv
 
     s = _seasons(seasons)
     with _db.connect(settings().db_url) as conn:
-        _run_steps(
-            conn,
-            [
-                ("teams", lambda: nv.ingest_teams(conn)),
-                ("players", lambda: nv.ingest_players(conn)),
-                ("schedules", lambda: nv.ingest_schedules(conn, s)),
-                ("player_stats", lambda: nv.ingest_player_week_stats(conn, s)),
-                ("injuries", lambda: nv.ingest_injury_reports(conn, s)),
-            ],
-        )
+        steps = [
+            ("teams", lambda: nv.ingest_teams(conn)),
+            ("players", lambda: nv.ingest_players(conn)),
+            ("schedules", lambda: nv.ingest_schedules(conn, s)),
+            ("player_stats", lambda: nv.ingest_player_week_stats(conn, s)),
+            ("injuries", lambda: nv.ingest_injury_reports(conn, s)),
+        ]
+        if only:
+            want = {w.strip() for w in only.split(",")}
+            unknown = want - {n for n, _ in steps}
+            if unknown:
+                raise typer.BadParameter(f"unknown step(s): {sorted(unknown)}")
+            steps = [st for st in steps if st[0] in want]
+        _run_steps(conn, steps)
 
 
 @nfl_app.command()
