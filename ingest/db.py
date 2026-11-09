@@ -57,8 +57,11 @@ def _py(v: Any) -> Any:
     """Coerce polars cell values into psycopg-friendly Python types."""
     if v is None:
         return None
-    if isinstance(v, (dict, list)):
+    if isinstance(v, dict):
         return Jsonb(v)
+    if isinstance(v, list):
+        # list of scalars → Postgres array; list containing dicts → jsonb
+        return Jsonb(v) if any(isinstance(x, (dict, list)) for x in v) else v
     if isinstance(v, float) and math.isnan(v):
         return None
     return v

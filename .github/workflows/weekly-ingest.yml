@@ -71,19 +71,19 @@ jobs:
         run: bsb nfl weekly
 
       - name: Sleeper status snapshot
-        if: steps.plan.outputs.status == 'true'
+        if: always() && steps.plan.outputs.status == 'true'
         run: bsb sleeper status
 
       - name: Sleeper league snapshot
-        if: steps.plan.outputs.league == 'true' && env.SLEEPER_LEAGUE_ID != ''
+        if: always() && steps.plan.outputs.league == 'true' && env.SLEEPER_LEAGUE_ID != ''
         run: bsb sleeper league "$SLEEPER_LEAGUE_ID" --username "$SLEEPER_USERNAME"
 
       - name: Odds — OddsPapi
-        if: steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
+        if: always() && steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
         run: bsb odds oddspapi --days 7
 
       - name: Odds — OddsLink
-        if: steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
+        if: always() && steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
         run: bsb odds oddslink
 
       - name: Row counts
