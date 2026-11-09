@@ -59,6 +59,25 @@ def ping():
 
 # --- nflverse ---------------------------------------------------------------
 
+def _run_steps(conn, steps: list[tuple[str, callable]]) -> None:
+    """Run every step even if one fails (each step is its own transaction and
+    logs to bsb.ingest_runs), then exit non-zero if anything failed. A GitHub
+    CDN hiccup on one file shouldn't cost us the other four."""
+    failed = []
+    for name, fn in steps:
+        try:
+            fn()
+        except Exception as e:  # already logged by RunLogger
+            failed.append((name, e))
+            conn.rollback()
+    if failed:
+        typer.echo("\nFAILED steps:", err=True)
+        for name, e in failed:
+            typer.echo(f"  {name}: {str(e)[:200]}", err=True)
+        typer.echo("Re-run the same command to retry just these (all steps are idempotent).", err=True)
+        raise typer.Exit(1)
+
+
 @nfl_app.command()
 def backfill(seasons: str = typer.Option("2021-2026", help="e.g. 2021-2026 or 2024,2025")):
     """Teams, players, schedules, weekly stats, injuries for the given seasons."""
@@ -66,11 +85,16 @@ def backfill(seasons: str = typer.Option("2021-2026", help="e.g. 2021-2026 or 20
 
     s = _seasons(seasons)
     with _db.connect(settings().db_url) as conn:
-        nv.ingest_teams(conn)
-        nv.ingest_players(conn)
-        nv.ingest_schedules(conn, s)
-        nv.ingest_player_week_stats(conn, s)
-        nv.ingest_injury_reports(conn, s)
+        _run_steps(
+            conn,
+            [
+                ("teams", lambda: nv.ingest_teams(conn)),
+                ("players", lambda: nv.ingest_players(conn)),
+                ("schedules", lambda: nv.ingest_schedules(conn, s)),
+                ("player_stats", lambda: nv.ingest_player_week_stats(conn, s)),
+                ("injuries", lambda: nv.ingest_injury_reports(conn, s)),
+            ],
+        )
 
 
 @nfl_app.command()
@@ -80,10 +104,15 @@ def weekly():
 
     s = [nv.current_season()]
     with _db.connect(settings().db_url) as conn:
-        nv.ingest_players(conn)
-        nv.ingest_schedules(conn, s)
-        nv.ingest_player_week_stats(conn, s)
-        nv.ingest_injury_reports(conn, s)
+        _run_steps(
+            conn,
+            [
+                ("players", lambda: nv.ingest_players(conn)),
+                ("schedules", lambda: nv.ingest_schedules(conn, s)),
+                ("player_stats", lambda: nv.ingest_player_week_stats(conn, s)),
+                ("injuries", lambda: nv.ingest_injury_reports(conn, s)),
+            ],
+        )
 
 
 # --- sleeper ----------------------------------------------------------------

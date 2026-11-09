@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import nflreadpy as _nflreadpy
 import polars as pl
 import psycopg
+from nflreadpy.config import update_config as _update_config
 
 from .db import RunLogger, upsert_df
 from .scoring import draftkings_nfl
@@ -20,19 +21,28 @@ from .scoring import draftkings_nfl
 log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-def _retry[T](fn: Callable[[], T], what: str, attempts: int = 5, base_delay: float = 5.0) -> T:
-    """GitHub's release CDN intermittently returns 5xx / times out. Retry with
-    exponential backoff (5s, 10s, 20s, 40s) before giving up."""
+def _retry[T](
+    fn: Callable[[], T], what: str, attempts: int = 10, base_delay: float = 3.0, max_delay: float = 60.0
+) -> T:
+    """GitHub's release CDN intermittently returns 5xx / times out — sometimes
+    for many minutes during an incident. Retry with exponential backoff (3s →
+    60s cap, ~7 min total) before giving up. A failed download is cheap to
+    retry; a failed weekly job is annoying."""
     for i in range(attempts):
         try:
             return fn()
         except Exception as e:  # nflreadpy wraps everything in ConnectionError/ValueError
             if i == attempts - 1:
                 raise
-            delay = base_delay * (2**i)
+            delay = min(max_delay, base_delay * (2**i))
             log.warning("%s failed (%s); retry %d/%d in %.0fs", what, e, i + 1, attempts - 1, delay)
             time.sleep(delay)
     raise AssertionError("unreachable")
+
+
+# Give GitHub longer per request too (default 30s; their gateway 504s at ~10s
+# when it's unhealthy, so this mostly matters for big files like pbp).
+_update_config(timeout=90)
 
 
 class _NFL:

@@ -35,6 +35,8 @@ jobs:
       - name: Backfill nflverse
         run: bsb nfl backfill --seasons "${{ inputs.seasons }}"
       - name: Sleeper status snapshot
+        if: always()
         run: bsb sleeper status
       - name: Row counts
+        if: always()
         run: bsb db ping
