@@ -41,7 +41,7 @@ class Settings:
     oddspapi_bookmakers: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             s.strip()
-            for s in os.getenv("ODDSPAPI_BOOKMAKERS", "pinnacle,draftkings,betmgm,circa").split(",")
+            for s in os.getenv("ODDSPAPI_BOOKMAKERS", "pinnacle,draftkings,betmgm,circasports").split(",")
             if s.strip()
         )
     )
