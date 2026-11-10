@@ -1,0 +1,62 @@
+name: Projections
+
+# Re-project the upcoming week after every successful ingest, so projections
+# always reflect the newest stats, injury report and Sleeper statuses:
+#   Tue (post-MNF stats) · Fri (final injury report) · Sun 10:00 + 11:30 ET (inactives)
+on:
+  workflow_run:
+    workflows: ["Weekly ingest"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season (blank = current)"
+        required: false
+      week:
+        description: "Week (blank = next unplayed)"
+        required: false
+
+concurrency:
+  group: projections
+  cancel-in-progress: true   # a newer ingest supersedes an in-flight projection
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  project:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[model]"
+
+      # completed seasons never change — keep their nflverse files between runs
+      - uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: nflverse-cache-v1
+
+      - name: Apply migrations
+        run: bsb db migrate
+
+      - name: Train + project
+        env:
+          SEASON: ${{ inputs.season }}
+          WEEK: ${{ inputs.week }}
+        run: |
+          args=()
+          if [[ -n "$SEASON" ]]; then args+=(--season "$SEASON"); fi
+          if [[ -n "$WEEK" ]]; then args+=(--week "$WEEK"); fi
+          bsb model project "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projections
+          path: data/projections/*.csv
+          retention-days: 30

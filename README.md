@@ -4,8 +4,10 @@ NFL-first engine for DFS lineups (DraftKings), season-long fantasy (Sleeper),
 pick'em (Underdog) and sportsbook edges. Architecture is sport-agnostic; NFL
 is the first sport wired in.
 
-**Phase 1 (this repo today):** data lands in Supabase Postgres on a schedule.
-Modeling, lineup optimization and the PWA come after the tables fill.
+**Phase 1 (done):** data lands in Supabase Postgres on a schedule.
+**Phase 2 (in progress):** player-week projection model — stat means, DK/PPR
+points with an outcome distribution, and over/under probabilities for props.
+Lineup optimization and the PWA come next.
 
 ## Data sources
 
@@ -47,6 +49,43 @@ bsb odds oddspapi --days 7
 bsb odds oddslink
 ```
 
+## Projection model (`model/`)
+
+```bash
+pip install -e ".[dev,model]"
+bsb model backtest --train 2021-2025 --test 2026 --weeks 1-9   # accuracy + calibration report
+bsb model project                 # refresh data, retrain, project next week → bsb.projections
+bsb model project --no-write      # same, local only (data/projections/*.csv), no database
+bsb model price "ceedee lamb" receiving_yards 84.5             # fair odds for a prop
+```
+
+How it works:
+
+- **One row per QB/RB/WR/TE per game**, built from nflverse box scores + snap counts
+  (a player with snaps but no touches is a real zero, not a missing row).
+- **Features use only earlier games** — player usage and efficiency (short/long EWMAs),
+  snap share and depth rank, team volume, Vegas implied team total and spread,
+  opponent defense both raw and opponent-adjusted, starting-QB quality, the player's own
+  injury-report status, and usage vacated by teammates who are out. Upcoming games are
+  appended as stat-less rows and run through the *same* code, so there is no separate
+  inference path to leak or drift (`tests/test_model.py` enforces both).
+- **One LightGBM model per stat** (Poisson for counts, squared error for yards). DK and
+  PPR points are derived from those stats with the site scoring rules, so points and
+  props never disagree.
+- **Distributions** are fitted on leave-one-season-out predictions: negative binomial
+  for counts, empirical for yards and fantasy points. That is where `dk_p10…dk_p90` and
+  `P(over line)` come from.
+- **Retrains on every run** (~3 min): Tuesday's projections have already seen Monday night.
+- Players Sleeper lists as Out/IR/Doubtful (latest `player_status_snapshots`) are dropped
+  and their usage flows to teammates.
+
+Latest holdout (trained 2021–2025, scored on 2026 weeks 1–9):
+[docs/model/backtest_2026_w01-09.md](docs/model/backtest_2026_w01-09.md).
+
+Known gaps: no kickers/DST yet; rookies with no NFL game are not projected; weather is
+not a feature; red-zone/route data (needs play-by-play) not used; the benchmark against
+real sportsbook prop lines waits on `odds_snapshots` history.
+
 ## Secrets
 
 GitHub → Settings → Secrets and variables → Actions:
@@ -69,6 +108,7 @@ Repository **variables** (not secrets): `SLEEPER_LEAGUE_ID`, `SLEEPER_USERNAME`.
 | Sat 22:00 | odds snapshot |
 | Sun 10:00 | odds snapshot + Sleeper status |
 | Sun 11:30 | Sleeper status (inactives for 1pm games) |
+| after each ingest | `Projections` workflow: retrain + project the upcoming week |
 
 Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow).
 
@@ -80,12 +120,16 @@ Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow)
 - `odds_snapshots` (append-only, every book/market/outcome) + `odds_latest` view
 - `dfs_slates`, `dfs_salaries` — DraftKings contests
 - `fantasy_leagues`, `fantasy_roster_snapshots` — Sleeper leagues
+- `model_runs`, `projections` (append-only) + `projections_latest` view — Phase 2 output;
+  stat columns share names with `player_week_stats` so projected-vs-actual is a plain join
 - `ingest_runs` — every job run, with row counts and errors
 
 ## Layout
 
 ```
 ingest/          Python package (bsb CLI)
+model/           projection model: features, training, distributions, backtest, projection
+docs/model/      backtest reports
 supabase/        SQL migrations
 scripts/         one-off probes
 .github/         Actions: ci, backfill, weekly-ingest
@@ -94,8 +138,8 @@ tests/
 
 ## Roadmap
 
-1. **Data** ← you are here
-2. Projections: player-week model (opponent-adjusted usage × efficiency), DK/PPR/Underdog outputs
+1. Data ✓
+2. **Projections** ← you are here: player-week model, DK/PPR outputs, prop probabilities
 3. Engines: DK classic + showdown optimizer with exposure limits; Sleeper start/sit + waivers; Underdog vs Pinnacle edge finder
 4. PWA (Firebase Hosting, Supabase reads, web push) at bigsurf.bet
 5. Agents (Claude) to argue through picks

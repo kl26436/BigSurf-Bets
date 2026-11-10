@@ -17,11 +17,13 @@ nfl_app = typer.Typer(no_args_is_help=True, help="nflverse data")
 sleeper_app = typer.Typer(no_args_is_help=True, help="Sleeper (injury status + leagues)")
 odds_app = typer.Typer(no_args_is_help=True, help="Sportsbook odds")
 dk_app = typer.Typer(no_args_is_help=True, help="DraftKings salaries")
+model_app = typer.Typer(no_args_is_help=True, help="Projection model (needs the [model] extra)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
 app.add_typer(sleeper_app, name="sleeper")
 app.add_typer(odds_app, name="odds")
 app.add_typer(dk_app, name="dk")
+app.add_typer(model_app, name="model")
 
 log = logging.getLogger("bsb")
 
@@ -199,6 +201,77 @@ def dk_fetch(draft_group_id: int, out: Path = Path("data/dk")):
     csv = draftgroup_to_csv(fetch_draftgroup(draft_group_id), out / f"dk_{draft_group_id}.csv")
     with _db.connect(settings().db_url) as conn:
         import_csv(conn, csv, slate_name=f"DK draftgroup {draft_group_id}", site_slate_id=str(draft_group_id))
+
+
+# --- model ------------------------------------------------------------------
+
+@model_app.command("backtest")
+def model_backtest(
+    train_seasons: str = typer.Option("2021-2025", "--train", help="seasons to fit on"),
+    test: int = typer.Option(2026, help="held-out season to score"),
+    weeks: str = typer.Option(None, help="week range within the test season, e.g. 1-9"),
+    out: str = typer.Option(None, help="write the markdown report here"),
+    offline: bool = typer.Option(False, help="use cached nflverse files only"),
+):
+    """Train on past seasons, score a later one, print accuracy + calibration."""
+    from model import backtest, data, features
+
+    tr = _seasons(train_seasons)
+    d = data.load(min(tr), test, offline=offline)
+    wk = tuple(int(x) for x in weeks.split("-")) if weeks else None
+    report = backtest.to_markdown(backtest.run(features.build(d), tr, test, wk))
+    typer.echo(report)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(report, encoding="utf-8")
+
+
+@model_app.command("project")
+def model_project(
+    season: int = typer.Option(None, help="default: current season"),
+    week: int = typer.Option(None, help="default: next unplayed week"),
+    write: bool = typer.Option(True, help="write to Supabase (bsb.projections); --no-write for a local dry run"),
+    offline: bool = typer.Option(False, help="use cached nflverse files only"),
+    top: int = typer.Option(25, help="rows to print"),
+):
+    """Refresh data, retrain, project the upcoming week. With --write, players
+    Sleeper lists as out are excluded and their usage is redistributed."""
+    import os
+
+    from model import project
+
+    out_ids: set[str] = set()
+    if write:
+        with _db.connect(settings().db_url) as conn:
+            out_ids = project.sleeper_out_ids(conn)
+    res = project.run(season, week, out_ids=out_ids, offline=offline)
+    path = project.save_local(res)
+    if write:
+        with _db.connect(settings().db_url) as conn:
+            run_id = project.write_db(conn, res, git_sha=os.getenv("GITHUB_SHA"))
+        typer.echo(f"run {run_id}: {res.projections.height} players → bsb.projections")
+    typer.echo(f"{res.season} week {res.week} — saved {path}")
+    cols = ["player_name", "position", "team", "opponent", "dk_mean", "dk_p10", "dk_p90", "ppr_mean", "anytime_td_prob"]
+    for r in res.projections.head(top).select(cols).iter_rows():
+        typer.echo("{:24s} {:2s} {:3s} v {:3s}  DK {:5.1f} ({:4.1f}–{:4.1f})  PPR {:5.1f}  TD {:4.0%}".format(*r))
+
+
+@model_app.command("price")
+def model_price(player: str, stat: str, line: float):
+    """Fair price for a prop from the last local run, e.g.
+    `bsb model price "ceedee lamb" receiving_yards 84.5`."""
+    from model import project
+
+    rows = project.price(player, stat, line)
+    if not rows:
+        typer.echo("no matching player with that stat in the latest projections", err=True)
+        raise typer.Exit(1)
+    for r in rows:
+        typer.echo(
+            f"{r['player']} ({r['team']} v {r['opponent']}, wk {r['week']}) {stat}: proj {r['projection']:.1f}\n"
+            f"  over  {line}: {r['p_over']:.1%}  fair {r['fair_over']:+d}\n"
+            f"  under {line}: {r['p_under']:.1%}  fair {r['fair_under']:+d}"
+        )
 
 
 if __name__ == "__main__":
