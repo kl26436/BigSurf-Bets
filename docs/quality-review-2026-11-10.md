@@ -13,18 +13,19 @@ Each finding says how it was confirmed. Fixes are in the same commit as this fil
 | 3 | **Four in five Sleeper injury statuses were thrown away.** Players were matched on the `gsis_id` Sleeper supplies, which it has for 177 of 872 skill players; 33 of 196 injured players were matched. An unmatched Out player stayed in the projections unless DraftKings happened to tag him. | Counted mapped rows in the newest `player_status_snapshots`. | Fixed: matching falls back to name + team, then name + position; earlier snapshots are back-filled. The run log now records the matched share. |
 | 4 | **Last week's "Out" kept players out of this week.** Sleeper keeps a game designation until the next report replaces it. On Tuesday, Mike Evans, Deebo Samuel, David Montgomery and Deshaun Watson were Out for week 9, Questionable on DraftKings for week 10, and missing from the week-10 projections. | Joined slate, Sleeper snapshot and week-9 injury report for unprojected players above $4,500. | Fixed: an Out/Doubtful seen more than 28 hours before kickoff is ignored when DraftKings lists the player as available; long-term statuses (IR, PUP, suspended) always hold. |
 | 5 | **Players returning after six or more weeks were never projected**, however healthy (candidates had to have played in the last five weeks). | Read `_upcoming_rows`. | Fixed for players DraftKings lists as available. **Open** for teams with no DraftKings slate loaded. |
-| 6 | The schedule's "what to run" step read the clock, not the cron line that fired. A Thursday 18:00 ET odds run starting after midnight UTC would have run a stats refresh instead and skipped the odds. | Read the workflow. | Fixed: decided from `github.event.schedule`. |
+| 6 | **No real player bet had ever been priced.** The prop query asked for period `full`; the feed labels whole-game props `result` (and uses `full` only for game lines). 2,200 prop rows were sitting in the latest snapshot while the run logged "0 raw rows". "None are posted yet" was the wrong diagnosis. Yes/no touchdown bets were also dropped (no line on them). | Found after the first run with the fixed parser: counted `player_prop` rows by `period`. | Fixed in `markets/props.py`. |
+| 7 | The schedule's "what to run" step read the clock, not the cron line that fired. A Thursday 18:00 ET odds run starting after midnight UTC would have run a stats refresh instead and skipped the odds. | Read the workflow. | Fixed: decided from `github.event.schedule`. |
 
 ## Would have stopped the pipeline or exposed data
 
 | # | Finding | Status |
 |---|---|---|
-| 7 | **No scheduled run had fired**; all crons sat at minute 0, where GitHub drops them most. | Fixed three ways: crons moved off the hour; a database timetable (pg_cron → workflow_dispatch) that fires on the minute once the GitHub token is in place; a daily `Feed health` workflow that fails, and so emails, when a feed goes quiet. |
-| 8 | **Every table was readable by anyone holding the public key**: `anon` had SELECT on all 22 tables, no row-level security, and `0001` re-granted it on every deploy. That includes the Sleeper league rosters. | Fixed (`0006`): `anon` has nothing; RLS on every table; only signed-in accounts in `bsb.app_users` read, through `app_*` views; writes only through checked functions. Tested as anon, as a signed-in stranger and as a member (`tests/test_db_access.py`), in CI against a real Postgres. |
-| 9 | Migrations were re-run in full on every deploy. One non-idempotent statement would have broken every workflow; and see #8. | Fixed: applied once, recorded in `bsb.schema_migrations`. |
-| 10 | The Sunday 11:30 ET status snapshot ran at the exact minute inactives are published, there was none for the 4 pm games, and none from Tuesday to Sunday — Friday's projections had no Sleeper data inside the 48-hour window. The "Fri 06:00 final injury reports" run was ten hours before those reports exist. | Fixed: timetable follows when information arrives (see `weekly-ingest.yml`). Projections re-run only when their inputs change (`inputs_hash`), so frequent snapshots cost a minute of free CI each. |
-| 11 | The Sleeper league tables were created by the ingest at run time, not by a migration; a fresh database could not be built from the repo. | Fixed (`0006`). |
-| 12 | A projections run could cancel one that was minutes from finishing (`cancel-in-progress`). | Fixed: runs queue instead. |
+| 8 | **No scheduled run had fired**; all crons sat at minute 0, where GitHub drops them most. | Fixed three ways: crons moved off the hour; a database timetable (pg_cron → workflow_dispatch) that fires on the minute once the GitHub token is in place; a daily `Feed health` workflow that fails, and so emails, when a feed goes quiet. |
+| 9 | **Every table was readable by anyone holding the public key**: `anon` had SELECT on all 22 tables, no row-level security, and `0001` re-granted it on every deploy. That includes the Sleeper league rosters. | Fixed (`0006`): `anon` has nothing; RLS on every table; only signed-in accounts in `bsb.app_users` read, through `app_*` views; writes only through checked functions. Tested as anon, as a signed-in stranger and as a member (`tests/test_db_access.py`), in CI against a real Postgres. |
+| 10 | Migrations were re-run in full on every deploy. One non-idempotent statement would have broken every workflow; and see #9. | Fixed: applied once, recorded in `bsb.schema_migrations`. |
+| 11 | The Sunday 11:30 ET status snapshot ran at the exact minute inactives are published, there was none for the 4 pm games, and none from Tuesday to Sunday — Friday's projections had no Sleeper data inside the 48-hour window. The "Fri 06:00 final injury reports" run was ten hours before those reports exist. | Fixed: timetable follows when information arrives (see `weekly-ingest.yml`). Projections re-run only when their inputs change (`inputs_hash`), so frequent snapshots cost a minute of free CI each. |
+| 12 | The Sleeper league tables were created by the ingest at run time, not by a migration; a fresh database could not be built from the repo. | Fixed (`0006`). |
+| 13 | A projections run could cancel one that was minutes from finishing (`cancel-in-progress`). | Fixed: runs queue instead. |
 
 ## Smaller defects
 
@@ -42,6 +43,9 @@ Each finding says how it was confirmed. Fixes are in the same commit as this fil
 - 36 existing tests pass in a clean install; 15 added.
 
 ## Limits that are not defects (unchanged, still true)
+
+- Edges on big underdogs are overstated. Pinnacle's margin is removed proportionally, which leaves too much probability on
+  long shots; a +395 that shows as 6% better than fair is more likely 3–4%. A better method (power or Shin) is **open**.
 
 - Beating a naive average by 5% is not beating the market. No prop history exists yet to test that; the first scorecard is week 10 (graded Nov 17).
 - No lineup ROI backtest: there is no archive of past salaries, ownership or contest results.

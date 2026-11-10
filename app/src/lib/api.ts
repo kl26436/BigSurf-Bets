@@ -21,19 +21,23 @@ function num<T>(rows: T[]): T[] {
   for (const r of rows as Record<string, unknown>[]) {
     for (const k in r) {
       const v = r[k];
-      if (typeof v === "string" && k !== "dk_id" && !k.endsWith("_id") && k !== "name" && NUMERIC.test(v)) r[k] = Number(v);
+      if (typeof v === "string" && !TEXT.has(k) && !k.endsWith("_id") && NUMERIC.test(v)) r[k] = Number(v);
     }
   }
   return rows;
 }
 
-async function all<T>(view: string, build: (q: any) => any = (q) => q): Promise<T[]> {
+const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note"]);
+
+/** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
+async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
   const out: T[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await build(supabase!.from(view).select("*")).range(from, from + 999);
+  const page = max ?? 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await build(supabase!.from(view).select("*")).range(from, from + page - 1);
     if (error) throw new Error(error.message);
     out.push(...(data as T[]));
-    if (!data || data.length < 1000) return num(out);
+    if (max != null || !data || data.length < page) return num(out);
   }
 }
 
@@ -94,14 +98,14 @@ export const useScorecards = () =>
 export const useRoster = () =>
   useQuery({ queryKey: ["roster"], queryFn: () => (DEMO ? demo.roster : all<RosterPlayer>("app_my_roster")) });
 export const useFreeAgents = () =>
-  useQuery({ queryKey: ["free-agents"], queryFn: () => (DEMO ? demo.freeAgents : all<RosterPlayer>("app_free_agents", (q) => q.order("ppr_mean", { ascending: false }).limit(40))) });
+  useQuery({ queryKey: ["free-agents"], queryFn: () => (DEMO ? demo.freeAgents : all<RosterPlayer>("app_free_agents", (q) => q.order("ppr_mean", { ascending: false }), 40)) });
 export const useJobs = () =>
-  useQuery({ queryKey: ["jobs"], queryFn: () => (DEMO ? demo.jobs() : all<Job>("app_jobs", (q) => q.order("created_at", { ascending: false }).limit(15))),
+  useQuery({ queryKey: ["jobs"], queryFn: () => (DEMO ? demo.jobs() : all<Job>("app_jobs", (q) => q.order("created_at", { ascending: false }), 15)),
     refetchInterval: (q) => ((q.state.data ?? []).some((j) => ["queued", "dispatched", "running"].includes(j.status)) ? 8000 : MIN) });
 export const usePlayerLog = (playerId: string | null | undefined) =>
   useQuery({ queryKey: ["log", playerId], enabled: !!playerId && !playerId.startsWith("DST_"), staleTime: 10 * MIN,
     queryFn: () => (DEMO ? demo.log(playerId!) : all<Record<string, number | string | null>>("app_player_log",
-      (q) => q.eq("player_id", playerId).order("season", { ascending: false }).order("week", { ascending: false }).limit(8))) });
+      (q) => q.eq("player_id", playerId).order("season", { ascending: false }).order("week", { ascending: false }), 8)) });
 export const useSettings = () =>
   useQuery({ queryKey: ["settings"], staleTime: Infinity,
     queryFn: async (): Promise<Settings> => ({ ...DEFAULT_SETTINGS, ...(DEMO ? demo.loadSettings() : await rpc<Partial<Settings>>("bsb_get_settings")) }) });
