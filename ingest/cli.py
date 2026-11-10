@@ -134,12 +134,15 @@ def backfill(
 
 
 @nfl_app.command()
-def weekly():
+def weekly(min_gap: int = typer.Option(0, help="skip if stats were refreshed within this many minutes")):
     """In-season refresh: current season schedules, stats, injuries + players."""
     from . import nflverse as nv
 
     s = [nv.current_season()]
     with _db.connect(settings().db_url) as conn:
+        if _db.recent_ok(conn, "nflverse.player_stats", min_gap):
+            typer.echo(f"stats refreshed within the last {min_gap} min — skipped")
+            return
         _run_steps(
             conn,
             [
@@ -154,11 +157,14 @@ def weekly():
 # --- sleeper ----------------------------------------------------------------
 
 @sleeper_app.command()
-def status():
+def status(min_gap: int = typer.Option(0, help="skip if a snapshot was taken within this many minutes")):
     """Snapshot current injury/depth status for all active skill players."""
     from .sleeper import snapshot_status
 
     with _db.connect(settings().db_url) as conn:
+        if _db.recent_ok(conn, "sleeper.status", min_gap):
+            typer.echo(f"status snapshot taken within the last {min_gap} min — skipped")
+            return
         snapshot_status(conn)
 
 
@@ -183,7 +189,7 @@ def league(league_id: str, username: str = typer.Option(None, help="your Sleeper
 # --- odds -------------------------------------------------------------------
 
 @odds_app.command()
-def oddspapi(days: int = 7):
+def oddspapi(days: int = 7, min_gap: int = typer.Option(0, help="skip if a snapshot was taken within this many minutes")):
     """Snapshot upcoming NFL boards from OddsPapi (uses ODDSPAPI_BOOKMAKERS)."""
     from .odds_oddspapi import snapshot_upcoming
 
@@ -191,11 +197,14 @@ def oddspapi(days: int = 7):
     if not cfg.oddspapi_key:
         raise typer.BadParameter("ODDSPAPI_API_KEY not set")
     with _db.connect(cfg.db_url) as conn:
+        if _db.recent_ok(conn, "odds.oddspapi", min_gap):   # 250 requests a month: never spend them twice
+            typer.echo(f"OddsPapi snapshot taken within the last {min_gap} min — skipped")
+            return
         snapshot_upcoming(conn, cfg.oddspapi_key, list(cfg.oddspapi_bookmakers), days)
 
 
 @odds_app.command()
-def oddslink():
+def oddslink(min_gap: int = typer.Option(0, help="skip if a snapshot was taken within this many minutes")):
     """Snapshot upcoming NFL game lines from OddsLink."""
     from .odds_oddslink import snapshot_upcoming
 
@@ -203,6 +212,9 @@ def oddslink():
     if not cfg.oddslink_key:
         raise typer.BadParameter("ODDSLINK_API_KEY not set")
     with _db.connect(cfg.db_url) as conn:
+        if _db.recent_ok(conn, "odds.oddslink", min_gap):
+            typer.echo(f"OddsLink snapshot taken within the last {min_gap} min — skipped")
+            return
         snapshot_upcoming(conn, cfg.oddslink_key)
 
 
