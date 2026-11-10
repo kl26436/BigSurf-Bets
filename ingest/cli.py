@@ -18,6 +18,7 @@ sleeper_app = typer.Typer(no_args_is_help=True, help="Sleeper (injury status + l
 odds_app = typer.Typer(no_args_is_help=True, help="Sportsbook odds")
 dk_app = typer.Typer(no_args_is_help=True, help="DraftKings salaries")
 model_app = typer.Typer(no_args_is_help=True, help="Projection model (needs the [model] extra)")
+edges_app = typer.Typer(no_args_is_help=True, help="Market edges: props and game lines")
 lineups_app = typer.Typer(no_args_is_help=True, help="DraftKings lineup optimizer (needs the [model] extra)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
@@ -26,6 +27,7 @@ app.add_typer(odds_app, name="odds")
 app.add_typer(dk_app, name="dk")
 app.add_typer(model_app, name="model")
 app.add_typer(lineups_app, name="lineups")
+app.add_typer(edges_app, name="edges")
 
 log = logging.getLogger("bsb")
 
@@ -254,7 +256,18 @@ def model_project(
     if write:
         with _db.connect(settings().db_url) as conn:
             run_id = project.write_db(conn, res, git_sha=os.getenv("GITHUB_SHA"))
-        typer.echo(f"run {run_id}: {res.projections.height} players → bsb.projections")
+            typer.echo(f"run {run_id}: {res.projections.height} players → bsb.projections")
+            # price the market with the model that was just fitted; never let a
+            # market hiccup cost us the projections that are already saved
+            try:
+                from markets import lines, props
+
+                n_props = props.build(conn, res.model, res.projections, run_id, res.season, res.week)
+                n_lines = lines.build(conn)
+                typer.echo(f"markets: {n_props} prop prices → bsb.prop_prices, {n_lines} line quotes → bsb.line_quotes")
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                log.warning("market pricing failed (projections are saved): %s", e)
     typer.echo(f"{res.season} week {res.week} — saved {path}")
     cols = ["player_name", "position", "team", "opponent", "dk_mean", "dk_p10", "dk_p90", "ppr_mean", "anytime_td_prob"]
     fmt = "{:24s} {:3s} {:3s} v {:3s}  DK {:5.1f} ({:4.1f}–{:4.1f})  PPR {:5.1f}  TD {:4.0%}"
@@ -263,6 +276,20 @@ def model_project(
     typer.echo("— DST —")
     for r in res.projections.filter(pl.col("position") == "DST").head(8).select(cols).iter_rows():
         typer.echo(fmt.format(*[0.0 if v is None else v for v in r]))
+
+
+@model_app.command("scorecard")
+def model_scorecard(
+    season: int = typer.Option(None, help="default: current season"),
+    week: int = typer.Option(None, help="default: latest fully played week"),
+    offline: bool = typer.Option(False, help="use cached nflverse files only"),
+):
+    """Grade a finished week: projections, saved lineups and prop prices vs what happened."""
+    from model import scorecard
+
+    with _db.connect(settings().db_url) as conn:
+        r = scorecard.run(conn, season, week, offline=offline)
+    typer.echo(scorecard.to_text(r) if r else "nothing to grade yet")
 
 
 @model_app.command("price")
@@ -281,6 +308,53 @@ def model_price(player: str, stat: str, line: float):
             f"  over  {line}: {r['p_over']:.1%}  fair {r['fair_over']:+d}\n"
             f"  under {line}: {r['p_under']:.1%}  fair {r['fair_under']:+d}"
         )
+
+
+# --- edges ------------------------------------------------------------------
+
+@edges_app.command("lines")
+def edges_lines():
+    """Analyse the newest game-line snapshot (best price, Pinnacle fair value, arbitrage)."""
+    from markets import lines
+
+    with _db.connect(settings().db_url) as conn:
+        typer.echo(f"{lines.build(conn)} quotes → bsb.line_quotes")
+
+
+@edges_app.command("show")
+def edges_show(min_ev: float = typer.Option(0.02, help="minimum expected value to list"), top: int = typer.Option(15)):
+    """Current edges: arbitrage and +EV on game lines, and props priced off Pinnacle and off the model."""
+    with _db.connect(settings().db_url) as conn:
+        arbs = conn.execute(
+            """select game_id, market, number, outcome, bookmaker, price_american, round(arb_pct * 100, 2)
+               from bsb.line_quotes_latest where arb_pct > 0 and is_best order by arb_pct desc, game_id, market, outcome limit %s""",
+            (top * 2,),
+        ).fetchall()
+        ev = conn.execute(
+            """select game_id, market, line, outcome, bookmaker, price_american, round(fair_prob * 100, 1), round(ev * 100, 2)
+               from bsb.line_quotes_latest where ev >= %s and bookmaker <> 'pinnacle' order by ev desc limit %s""",
+            (min_ev, top),
+        ).fetchall()
+        sides = """select player_name, team, stat, line, bookmaker, side, price, round(fair * 100, 1), round(model * 100, 1), round(ev * 100, 2)
+                   from (select player_name, team, stat, line, bookmaker, 'over' as side, over_decimal as price, fair_over as fair,
+                                model_over as model, {over} as ev from bsb.prop_edges
+                         union all
+                         select player_name, team, stat, line, bookmaker, 'under', under_decimal, 1 - fair_over,
+                                1 - model_over, {under} from bsb.prop_edges) x
+                   where ev >= %s and bookmaker <> 'pinnacle' order by ev desc limit %s"""
+        fair = conn.execute(sides.format(over="ev_over_fair", under="ev_under_fair"), (min_ev, top)).fetchall()
+        model = conn.execute(sides.format(over="ev_over_model", under="ev_under_model"), (min_ev, top)).fetchall()
+    typer.echo(f"ARBITRAGE on game lines ({len(arbs)} legs)")
+    for r in arbs:
+        typer.echo(f"  {r[0]:18s} {r[1]:9s} {r[2]:>5} {r[3]:5s} {r[4]:10s} {r[5]:+5d}   locks {r[6]}%")
+    typer.echo(f"\nGAME LINES beating Pinnacle fair value by ≥ {min_ev:.0%}")
+    for r in ev:
+        typer.echo(f"  {r[0]:18s} {r[1]:9s} {r[2] if r[2] is not None else '':>5} {r[3]:5s} {r[4]:10s} {r[5]:+5d}   fair {r[6]}%  EV {r[7]:+}%")
+    for title, rows in (("PROPS beating Pinnacle fair value (same line)", fair), ("PROPS the model likes (unproven until the scorecard says otherwise)", model)):
+        typer.echo(f"\n{title}")
+        for r in rows:
+            f = f"{r[7]}%" if r[7] is not None else "  –  "
+            typer.echo(f"  {(r[0] or '?'):22s} {r[1] or '':3s} {r[2]:16s} {r[4]:10s} {r[5]:5s} {r[3]:>5} @ {float(r[6]):.2f}   fair {f}  model {r[8]}%  EV {r[9]:+}%")
 
 
 # --- lineups ----------------------------------------------------------------

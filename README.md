@@ -123,6 +123,35 @@ bsb lineups build --csv slates/2026-w10-main.csv --projections data/projections/
 Not modelled yet: field ownership (so no leverage), showdown slates, late swap, and — because there
 is no archive of past DK salaries — no historical ROI backtest of the lineups themselves.
 
+## Markets and edges (`markets/`)
+
+```bash
+bsb edges show --min-ev 0.02     # arbitrage + +EV on game lines, props vs Pinnacle and vs the model
+bsb edges lines                  # re-analyse the newest game-line snapshot
+bsb model scorecard              # grade the last finished week
+```
+
+- **Props** (`props.py`): each projections run prices every current prop for the week into
+  `bsb.prop_prices` — provider market → our stat and line (`"40+"` → over 39.5), `"Last, First"` →
+  our `player_id`, over/under paired per book with the vig stripped, plus the model's P(over).
+  `bsb.prop_edges` adds Pinnacle's no-vig probability at the same line and the EV of each side at
+  each book under Pinnacle's number and under the model's. Only markets named "(incl. overtime)"
+  are used; the same names without it are mislabelled in the feed.
+- **Game lines** (`lines.py`): `bsb.line_quotes` holds every book's moneyline / spread / total quote
+  with Pinnacle fair value, EV, best-price flag and the arbitrage return of the market. A book's
+  quote is ignored unless its own two sides form a sane market (0–12% vig) — the feed carries rows
+  like −175 / +14400 that would otherwise look like arbitrage.
+- **Scorecard** (`model/scorecard.py`): every Tuesday the last finished week is graded into
+  `bsb.scorecards` — projections believed at kickoff vs actual (and vs DraftKings' own average
+  points), each saved lineup's real score vs its simulated range, and the model's prop
+  probabilities vs Pinnacle's with the P&L of the edges it flagged. `bsb.player_results` keeps the
+  actual DK/PPR points per player and DST.
+- Odds snapshots: Thu 18:00, Sat 22:00, Sun 10:00, Mon 18:00 ET (props are only posted near game
+  day). ≈ 125 of OddsPapi's 250 monthly requests.
+
+Model-based prop edges are unproven until the scorecard has several weeks of history; edges
+against Pinnacle's fair value do not depend on the model.
+
 ## Secrets
 
 GitHub → Settings → Secrets and variables → Actions:

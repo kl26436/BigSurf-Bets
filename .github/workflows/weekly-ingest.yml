@@ -9,6 +9,8 @@ on:
     - cron: "0 3  * * 0"    # Sat 22:00 ET (Sun 03:00 UTC) — odds snapshot
     - cron: "0 15 * * 0"    # Sun 10:00 ET — odds + Sleeper status (pre-inactives)
     - cron: "30 16 * * 0"   # Sun 11:30 ET — Sleeper status (inactives drop ~11:30 ET for 1pm)
+    - cron: "0 23 * * 4"    # Thu 18:00 ET — odds snapshot before Thursday night (props are only posted near game day)
+    - cron: "0 23 * * 1"    # Mon 18:00 ET — odds snapshot before Monday night
   workflow_dispatch:
     inputs:
       job:
@@ -59,6 +61,7 @@ jobs:
               # Sunday (dow=7 in date +%u) hosts all three weekend crons
               if [[ "$dow" == "7" ]]; then odds=true; status=true; fi
               if [[ "$dow" == "7" && "$hour" == "16" ]]; then odds=false; fi
+              if [[ "$hour" == "23" && ( "$dow" == "4" || "$dow" == "1" ) ]]; then odds=true; fi
               ;;
           esac
           echo "stats=$stats"   >> "$GITHUB_OUTPUT"

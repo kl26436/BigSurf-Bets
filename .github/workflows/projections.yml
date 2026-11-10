@@ -45,6 +45,11 @@ jobs:
       - name: Apply migrations
         run: bsb db migrate
 
+      # grade the last finished week first (no-op until that week has projections on file)
+      - name: Scorecard
+        continue-on-error: true
+        run: bsb model scorecard
+
       - name: Train + project
         env:
           SEASON: ${{ inputs.season }}
