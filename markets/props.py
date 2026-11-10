@@ -159,9 +159,33 @@ def add_model(props: pl.DataFrame, model: train.Model, projections: pl.DataFrame
             pr = np.full(m.sum(), np.nan)
             pr[ok] = train.prob_over(model, s, mu[ok], line[m][ok])
         mean[m], prob[m] = mu, pr
-    return p.drop(*stats_).with_columns(
+    out = p.drop(*stats_).with_columns(
         pl.Series("proj_mean", mean).fill_nan(None), pl.Series("model_over", prob).fill_nan(None)
     )
+    return drop_implausible(out)
+
+
+MAX_DISAGREEMENT = 0.40
+
+
+def drop_implausible(props: pl.DataFrame) -> pl.DataFrame:
+    """Remove prices that cannot be for the stat they are filed under. The feed
+    mislabels some markets: BetMGM's 243.5 "rushing yards" line for a quarterback
+    was his passing line. The model saying 0% where the book says 50% is not an
+    edge, it is a different bet. Compared against the book's own probability
+    (no-vig when both sides are quoted, else the price itself)."""
+    if props.is_empty():
+        return props
+    over_implied = pl.coalesce(pl.col("novig_over"), 1 / pl.col("over_decimal"))
+    under_implied = 1 / pl.col("under_decimal")
+    gap = pl.coalesce(
+        (pl.col("model_over") - over_implied).abs(),
+        ((1 - pl.col("model_over")) - under_implied).abs(),
+    )
+    keep = props.filter(gap.is_null() | (gap <= MAX_DISAGREEMENT))
+    if keep.height < props.height:
+        log.info("props: dropped %d prices the model flatly contradicts (mislabelled markets)", props.height - keep.height)
+    return keep
 
 
 def write_db(conn, props: pl.DataFrame, run_id: int, season: int, week: int) -> int:

@@ -16,6 +16,20 @@ Each finding says how it was confirmed. Fixes are in the same commit as this fil
 | 6 | **No real player bet had ever been priced.** The prop query asked for period `full`; the feed labels whole-game props `result` (and uses `full` only for game lines). 2,200 prop rows were sitting in the latest snapshot while the run logged "0 raw rows". "None are posted yet" was the wrong diagnosis. Yes/no touchdown bets were also dropped (no line on them). | Found after the first run with the fixed parser: counted `player_prop` rows by `period`. | Fixed in `markets/props.py`. |
 | 7 | The schedule's "what to run" step read the clock, not the cron line that fired. A Thursday 18:00 ET odds run starting after midnight UTC would have run a stats refresh instead and skipped the odds. | Read the workflow. | Fixed: decided from `github.event.schedule`. |
 
+## What the first real player-bet prices showed (same day, after fix 6)
+
+The first pricing run put 1,223 player lines from DraftKings and BetMGM next to the model. That is the first time the model
+has been held against a market instead of against a naive average, and it found two more defects within the hour.
+
+| # | Finding | How it was confirmed | Status |
+|---|---|---|---|
+| 6a | **Starting quarterbacks were projected about 10% low, and far lower on teams with an active backup.** On the two-way lines the model's chance of the over sat 16 points below the books' on pass attempts, 12 on completions, 7 on passing yards. Cause: every backup seen in the last five weeks was listed as a candidate. History only has a second quarterback row when a second quarterback really played, so the model read two rows as "snaps were shared" and split the team's passing: Mahomes 24.5 attempts against a 32.9 average, Brissett 24.6 against 38.1 with 13.6 handed to the third-stringer. The backtest could not see it: historical rows are games that were played. | 26 starters: 29.6 projected attempts against a 33.2 season average, 18 of 24 below their own average; the worst cases were exactly the two-quarterback teams. | Fixed: one quarterback per team in the upcoming rows (the starter nflverse names if available, else the one with the most recent volume), and he is the quarterback his receivers' features see. After: 32.5 attempts, 237.7 yards against 239.2, 18.3 DraftKings points against 18.6. Other positions moved under 0.2 points on average. |
+| 6b | The feed mislabels some markets under the trusted names too: BetMGM's 243.5 "rushing yards" line for Jayden Daniels is his passing line. It showed up as the model's biggest "edge" (+87%). | Read the top disagreements. | Fixed: a price the model contradicts by more than 40 points is dropped as a different bet, not shown as an edge. |
+
+What this says about trust: the model's first contact with a market exposed a 10% bias that five seasons of backtesting had
+hidden. Until several weeks of scorecards say otherwise, a disagreement between the model and a sportsbook on a player bet is
+far more likely to be a model error than an edge. The app shows those as leads with no stake attached.
+
 ## Would have stopped the pipeline or exposed data
 
 | # | Finding | Status |
@@ -40,7 +54,8 @@ Each finding says how it was confirmed. Fixes are in the same commit as this fil
 - **Starting quarterbacks for the coming week are known to the model**: nflverse fills the expected starters into the schedule (checked on week 10). They can lag a late change — use an override.
 - DraftKings scoring (bonuses, turnovers, DST tiers) matches the published rules. The solver enforces budget, positions, two-game and stacking rules exactly; the upload file is in DraftKings' slot order with draftable ids.
 - Projections, lineup sets and prop prices are written in one transaction each: a cancelled run leaves nothing half-written.
-- 36 existing tests pass in a clean install; 15 added.
+- 36 existing tests pass in a clean install; 20 added (10 of them against a real Postgres, also in CI).
+- Supabase's security advisor after the lock-down: no errors. Two warnings fixed in `0009`; the rest are intended and noted there.
 
 ## Limits that are not defects (unchanged, still true)
 

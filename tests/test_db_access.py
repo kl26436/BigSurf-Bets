@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 8
+    assert len(db.migrate(url)) >= 9
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url

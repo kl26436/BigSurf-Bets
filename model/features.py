@@ -208,6 +208,39 @@ def _upcoming_rows(
     )
 
 
+def _one_quarterback_per_team(
+    fut: pl.DataFrame, played: pl.DataFrame, tsched: pl.DataFrame, cutoff: int
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Keep one quarterback per team in the upcoming rows. → (rows, team → starter).
+
+    History only has a second quarterback row when a second quarterback actually
+    played (injury, benching, blowout), so the model has learned that two rows
+    mean the snaps were shared. Listing every recently-seen backup as a candidate
+    made it split each team's passing between them: starters came out about 10%
+    low on attempts, and far lower on teams with an active backup (2026 week 10:
+    Brissett 24.6 projected against a 38.1 average, with 13.6 handed to the
+    third-stringer). The starter is the one nflverse names for the game if he is
+    available, otherwise the candidate who has thrown the most in his last three games."""
+    qbs = fut.filter(pl.col("pos") == "QB").select("player_id", "team")
+    if qbs.is_empty():
+        return fut, pl.DataFrame(schema={"team": pl.Utf8, "_starter": pl.Utf8})
+    named = tsched.filter(pl.col("t") == cutoff).select("team", pl.col("qb_id").alias("_named")).unique("team")
+    recent = (
+        played.filter(pl.col("pos") == "QB").with_columns(_t()).sort("t")
+        .group_by("player_id").agg(pl.col("attempts").tail(3).sum().alias("_recent_att"))
+    )
+    pick = (
+        qbs.join(named, on="team", how="left").join(recent, on="player_id", how="left")
+        .with_columns((pl.col("player_id") == pl.col("_named")).fill_null(False).alias("_is_named"),
+                      pl.col("_recent_att").fill_null(0.0))
+        .sort(["team", "_is_named", "_recent_att", "player_id"], descending=[False, True, True, False])
+        .group_by("team", maintain_order=True).first()
+    )
+    keep = pick["player_id"].to_list()
+    rows = fut.filter((pl.col("pos") != "QB") | pl.col("player_id").is_in(keep))
+    return rows, pick.select("team", pl.col("player_id").alias("_starter"))
+
+
 # ---------------------------------------------------------------------------
 # team / defense context
 # ---------------------------------------------------------------------------
@@ -312,8 +345,14 @@ def build(
         cutoff = upcoming[0] * 100 + upcoming[1]
         played = played.filter(pl.col("season") * 100 + pl.col("week") < cutoff)
         fut = _upcoming_rows(played, ref, data, upcoming[0], upcoming[1], out_ids or set(), force_ids)
+        fut, starters = _one_quarterback_per_team(fut, played, tsched, cutoff)
         played = pl.concat([played, fut.select(played.columns)], how="vertical_relaxed")
         tsched = tsched.filter(pl.col("played") | (pl.col("t") == cutoff))
+        # the starter we settled on is the starter everywhere: his own flag and his receivers' QB features
+        tsched = tsched.join(starters, on="team", how="left").with_columns(
+            pl.when((pl.col("t") == cutoff) & pl.col("_starter").is_not_null()).then(pl.col("_starter"))
+            .otherwise(pl.col("qb_id")).alias("qb_id")
+        ).drop("_starter")
     else:
         tsched = tsched.filter(pl.col("played"))
 

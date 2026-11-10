@@ -289,6 +289,13 @@ def model_project(
             out_ids, cleared = project.inactive_ids(conn)
             fingerprint = project.inputs_fingerprint(conn, out_ids, cleared, os.getenv("GITHUB_SHA"))
             if if_stale and season is None and week is None and fingerprint == project.latest_fingerprint(conn):
+                # record the check, so "projections are current" does not read as "projections are stale"
+                conn.execute(
+                    """insert into bsb.ingest_runs (job, finished_at, ok, rows_written, detail)
+                       select 'model.project', now(), true, r.n_players, jsonb_build_object('unchanged', true, 'run_id', r.id)
+                       from bsb.model_runs r order by r.created_at desc limit 1"""
+                )
+                conn.commit()
                 typer.echo("nothing new since the last projection run (same statuses, stats, odds, slate) — skipped")
                 return
     res = project.run(season, week, out_ids=out_ids, offline=offline, force_ids=cleared)

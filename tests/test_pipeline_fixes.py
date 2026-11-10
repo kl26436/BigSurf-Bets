@@ -82,3 +82,27 @@ def test_props_use_the_providers_whole_game_label_and_yes_no_touchdowns():
     assert props.canonical("player_receiving_yards" + ot, "40+", None) == ("receiving_yards", 39.5, "over")
     assert props.canonical("over_under_player_receiving_yards", "over", 4.5) is None      # the mislabelled twin
     assert props.canonical("over_under_player_receptions" + ot, "yes", None) is None
+
+
+def test_mislabelled_prop_markets_are_dropped():
+    df = pl.DataFrame({
+        "stat": ["rushing_yards", "receptions", "receiving_yards"], "line": [243.5, 4.5, 39.5],
+        "over_decimal": [1.87, 2.29, 1.25], "under_decimal": [1.87, 1.61, None],
+        "novig_over": [0.5, 0.413, None], "model_over": [0.0, 0.47, 0.71],
+    })
+    kept = props.drop_implausible(df)
+    assert kept["stat"].to_list() == ["receptions", "receiving_yards"]      # a real disagreement stays, a wrong market goes
+
+
+def test_one_quarterback_per_team_in_upcoming_rows():
+    from model.features import _one_quarterback_per_team
+
+    fut = pl.DataFrame({"player_id": ["starter", "backup", "wr", "old", "young"], "team": ["A", "A", "A", "B", "B"],
+                        "pos": ["QB", "QB", "WR", "QB", "QB"]})
+    played = pl.DataFrame({"player_id": ["starter", "backup", "old", "old", "young"], "pos": ["QB"] * 5,
+                           "season": [2026] * 5, "week": [9, 9, 7, 8, 9], "attempts": [3.0, 30.0, 35.0, 36.0, 12.0]})
+    tsched = pl.DataFrame({"team": ["A", "B"], "t": [202610, 202610], "qb_id": ["starter", "someone_ruled_out"]})
+    rows, starters = _one_quarterback_per_team(fut, played, tsched, 202610)
+    # A: the named starter wins even though the backup threw more last week; B: named QB is unavailable → most recent volume
+    assert sorted(rows["player_id"].to_list()) == ["old", "starter", "wr"]
+    assert dict(zip(starters["team"], starters["_starter"], strict=True)) == {"A": "starter", "B": "old"}
