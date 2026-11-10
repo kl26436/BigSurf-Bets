@@ -43,6 +43,10 @@ _SUFFIX = "_(incl._overtime)"
 _MILESTONE = re.compile(r"^(\d+)\+$")
 SHARP_BOOK = "pinnacle"
 MAX_HOLD = 0.15   # a two-way market with more vig than this is stale or broken
+# The provider labels whole-game props "result" (its "full" is used for game lines only);
+# "p1", "p1+p2", "p3+p4+overtime" are quarter and half props, which we do not price.
+# Filtering on "full" alone matched nothing, so no real prop was ever priced.
+FULL_GAME_PERIODS = ("result", "full")
 
 
 def canonical(prop_type: str | None, outcome: str | None, line: float | None) -> tuple[str, float, str] | None:
@@ -59,6 +63,8 @@ def canonical(prop_type: str | None, outcome: str | None, line: float | None) ->
         return stat, float(m.group(1)) - 0.5, "over"
     if outcome in ("over", "under") and line is not None:
         return stat, float(line), outcome
+    if stat == "anytime_td" and line is None and outcome in ("yes", "no"):   # "to score a touchdown": yes / no
+        return stat, 0.5, "over" if outcome == "yes" else "under"
     return None
 
 
@@ -82,8 +88,8 @@ def latest_rows(conn, game_ids: list[str], max_age_hours: int = 72) -> pl.DataFr
            select o.game_id, o.bookmaker, o.prop_type, o.outcome, o.line::float8, o.price_decimal::float8,
                   o.price_american, o.raw->>'playerName', o.captured_at
            from bsb.odds_snapshots o join last l using (bookmaker, captured_at)
-           where o.market = 'player_prop' and o.period = 'full' and o.game_id = any(%s)""",
-        (game_ids, max_age_hours, game_ids),
+           where o.market = 'player_prop' and o.period = any(%s) and o.game_id = any(%s)""",
+        (game_ids, max_age_hours, list(FULL_GAME_PERIODS), game_ids),
     )
     cols = ["game_id", "bookmaker", "prop_type", "outcome", "line", "price_decimal", "price_american", "player_name", "captured_at"]
     return pl.DataFrame(cur.fetchall(), schema=cols, orient="row", infer_schema_length=None)

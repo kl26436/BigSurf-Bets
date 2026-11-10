@@ -8,6 +8,7 @@ import polars as pl
 
 from ingest.odds_oddslink import _iter_prices, to_decimal
 from ingest.sleeper import norm_name
+from markets import props
 from model import data
 from optimizer.slate import apply_overrides
 
@@ -70,3 +71,14 @@ def test_override_rescales_the_whole_distribution():
     assert out["dk_mean"].to_list() == [15.0, 8.0, None]         # no model number → an override alone does not create one
     assert out["dk_p90"].to_list()[:2] == [30.0, 16.0] and out["dk_std"].to_list()[:2] == [7.5, 4.0]
     assert "override" not in out.columns
+
+
+def test_props_use_the_providers_whole_game_label_and_yes_no_touchdowns():
+    assert "result" in props.FULL_GAME_PERIODS        # what the feed calls a whole-game prop
+    ot = "_(incl._overtime)"
+    assert props.canonical("player_to_score_td" + ot, "yes", None) == ("anytime_td", 0.5, "over")
+    assert props.canonical("player_to_score_td" + ot, "no", None) == ("anytime_td", 0.5, "under")
+    assert props.canonical("over_under_player_receptions" + ot, "over", 4.5) == ("receptions", 4.5, "over")
+    assert props.canonical("player_receiving_yards" + ot, "40+", None) == ("receiving_yards", 39.5, "over")
+    assert props.canonical("over_under_player_receiving_yards", "over", 4.5) is None      # the mislabelled twin
+    assert props.canonical("over_under_player_receptions" + ot, "yes", None) is None
