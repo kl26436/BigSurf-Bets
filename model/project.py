@@ -16,17 +16,20 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from . import data, features, train
+from . import data, dst, features, train
 from .backtest import PROP_STATS
 from .dist import QUANTILES
 
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "p2.0"
+MODEL_VERSION = "p2.1"  # p2.1: + DST
 FIRST_SEASON = 2021
 OUT_DIR = Path("data/projections")
 # Sleeper injury_status values that mean "will not play this week"
 SLEEPER_OUT = ("Out", "IR", "PUP", "Sus", "Doubtful", "NA", "COV", "DNR")
+# DraftKings' Status column on a salary export
+DK_OUT = ("OUT", "O", "IR", "D")
+DK_STATUS_MAX_AGE_HOURS = 96
 
 
 @dataclass
@@ -36,6 +39,7 @@ class Result:
     projections: pl.DataFrame
     model: train.Model
     n_out: int
+    dst_model: dst.DSTModel | None = None
 
 
 def sleeper_out_ids(conn, max_age_hours: int = 48) -> set[str]:
@@ -48,6 +52,36 @@ def sleeper_out_ids(conn, max_age_hours: int = 48) -> set[str]:
         (max_age_hours,),
     ).fetchall()
     return {pid for pid, status in rows if status in SLEEPER_OUT}
+
+
+def dk_out_ids(conn, max_age_hours: int = DK_STATUS_MAX_AGE_HOURS) -> set[str]:
+    """Players DraftKings tags Out / IR / Doubtful on a recently imported salary
+    file for a slate that hasn't started. DK often flags a player days before
+    the official injury report does; the age limit keeps a stale export from
+    holding someone out after their status changes."""
+    rows = conn.execute(
+        """select distinct s.player_id
+           from bsb.dfs_salaries s join bsb.dfs_slates sl on sl.id = s.slate_id
+           where sl.site = 'draftkings' and sl.starts_at > now()
+             and sl.imported_at > now() - make_interval(hours => %s)
+             and s.player_id is not null and s.position <> 'DST'
+             and upper(s.raw->>'Status') = any(%s)""",
+        (max_age_hours, list(DK_OUT)),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _tidy_dst(pred: pl.DataFrame) -> pl.DataFrame:
+    return pred.select(
+        "season", "week", (pl.lit("DST_") + pl.col("team")).alias("player_id"),
+        (pl.col("team") + pl.lit(" DST")).alias("player_name"), pl.lit("DST").alias("position"),
+        "team", "opponent", "game_id", "is_home", pl.col("own_implied_total").alias("implied_total"), "spread_team",
+        pl.col("proj_dk").round(2).alias("dk_mean"), pl.col("proj_dk_std").round(2).alias("dk_std"),
+        *[pl.col(f"proj_dk_p{int(q * 100)}").round(2).alias(f"dk_p{int(q * 100)}") for q in QUANTILES],
+        pl.col("proj_sacks").round(3).alias("dst_sacks"), pl.col("proj_interceptions").round(3).alias("dst_interceptions"),
+        pl.col("proj_fumble_recoveries").round(3).alias("dst_fumble_recoveries"), pl.col("proj_tds").round(3).alias("dst_tds"),
+        pl.col("proj_points_allowed").round(2).alias("dst_points_allowed"),
+    )
 
 
 def _tidy(model: train.Model, pred: pl.DataFrame) -> pl.DataFrame:
@@ -101,10 +135,15 @@ def run(
     fut = df.filter(pl.col("is_future"))
     if fut.is_empty():
         raise RuntimeError(f"No games/players found for {season} week {week}")
-    model, _ = train.fit(df, list(range(first_season, season + 1)))
+    seasons = list(range(first_season, season + 1))
+    model, _ = train.fit(df, seasons)
     proj = _tidy(model, train.predict(model, fut))
-    log.info("projected %d players for %s week %s", proj.height, season, week)
-    return Result(season, week, proj, model, len(out_ids or ()))
+    dst_df = dst.build(d, upcoming=(season, week))
+    dst_model = dst.fit(dst_df, seasons)
+    dst_proj = _tidy_dst(dst.predict(dst_model, dst_df.filter(pl.col("is_future"))))
+    log.info("projected %d players + %d DSTs for %s week %s", proj.height, dst_proj.height, season, week)
+    proj = pl.concat([proj, dst_proj], how="diagonal_relaxed").sort("dk_mean", descending=True)
+    return Result(season, week, proj, model, len(out_ids or ()), dst_model)
 
 
 def save_local(res: Result, out_dir: Path | None = None) -> Path:
@@ -133,7 +172,8 @@ def write_db(conn, res: Result, git_sha: str | None = None) -> int:
                values ('nfl', %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) returning id""",
             (
                 MODEL_VERSION, res.season, res.week, m.seasons, m.n_rows, len(m.features),
-                res.projections.height, res.n_out, _json(m.oof_metrics), git_sha,
+                res.projections.height, res.n_out,
+                _json({**m.oof_metrics, **({"oof_mae_dst_dk": res.dst_model.oof_mae} if res.dst_model else {})}), git_sha,
             ),
         ).fetchone()[0]
         df = res.projections.drop("player_name", "is_home", "implied_total", "spread_team").with_columns(

@@ -18,6 +18,8 @@ dist/
 data/
 *.parquet
 *.csv
+# …except DraftKings salary exports dropped in slates/ (imported by the "DK slate import" workflow)
+!slates/*.csv
 !supabase/seed/*.csv
 
 # Node / PWA (Phase 3+)

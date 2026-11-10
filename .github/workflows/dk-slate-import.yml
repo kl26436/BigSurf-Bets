@@ -1,0 +1,44 @@
+name: DK slate import
+
+# Drop a DraftKings "Export to CSV" file into slates/ (GitHub → Add file → Upload
+# files) and it is loaded into bsb.dfs_slates / bsb.dfs_salaries. Re-uploading a
+# fresher export of the same slate updates salaries and player statuses in place.
+# Projections re-run afterwards so DK's Out / IR / Doubtful tags take effect.
+on:
+  push:
+    branches: [main]
+    paths: ["slates/*.csv"]
+  workflow_dispatch:
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Apply migrations
+        run: bsb db migrate
+      - name: Import changed slate files
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          shopt -s nullglob
+          if [[ "$EVENT" == "push" ]]; then
+            mapfile -t files < <(git diff --name-only --diff-filter=AM HEAD~1 HEAD -- 'slates/*.csv')
+          else
+            files=(slates/*.csv)
+          fi
+          for f in "${files[@]}"; do
+            echo "importing $f"
+            bsb dk import-csv "$f" --slate-name "$(basename "$f" .csv)"
+          done

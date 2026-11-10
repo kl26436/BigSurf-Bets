@@ -29,6 +29,7 @@ class NFLData:
     injuries: pl.DataFrame   # official weekly injury reports
     snaps: pl.DataFrame      # PFR snap counts
     players: pl.DataFrame    # player reference (ids, birth date, draft, latest team)
+    team_stats: pl.DataFrame | None = None  # weekly team stats incl. defense/special teams (DST model)
 
 
 def _fix_teams(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
@@ -86,6 +87,7 @@ def load(
     schedules = _load_seasons("schedules", seasons, fresh, cache)
     injuries = _load_seasons("injuries", seasons, fresh, cache)
     snaps = _load_seasons("snap_counts", seasons, fresh, cache)
+    team_stats = _load_seasons("team_stats", seasons, fresh, cache, summary_level="week")
     if offline and (cache / "players.parquet").exists():
         players = pl.read_parquet(cache / "players.parquet")
     else:
@@ -97,6 +99,7 @@ def load(
         injuries=_fix_teams(injuries, ["team"]),
         snaps=_fix_teams(snaps, ["team", "opponent"]),
         players=_fix_teams(players, ["latest_team"]),
+        team_stats=_fix_teams(team_stats, ["team", "opponent_team"]),
     )
 
 

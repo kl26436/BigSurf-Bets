@@ -214,12 +214,13 @@ def model_backtest(
     offline: bool = typer.Option(False, help="use cached nflverse files only"),
 ):
     """Train on past seasons, score a later one, print accuracy + calibration."""
-    from model import backtest, data, features
+    from model import backtest, data, dst, features
 
     tr = _seasons(train_seasons)
     d = data.load(min(tr), test, offline=offline)
     wk = tuple(int(x) for x in weeks.split("-")) if weeks else None
     report = backtest.to_markdown(backtest.run(features.build(d), tr, test, wk))
+    report += "\n" + dst.to_markdown(dst.evaluate(dst.build(d), tr, test, wk))
     typer.echo(report)
     if out:
         Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -238,12 +239,14 @@ def model_project(
     Sleeper lists as out are excluded and their usage is redistributed."""
     import os
 
+    import polars as pl
+
     from model import project
 
     out_ids: set[str] = set()
     if write:
         with _db.connect(settings().db_url) as conn:
-            out_ids = project.sleeper_out_ids(conn)
+            out_ids = project.sleeper_out_ids(conn) | project.dk_out_ids(conn)
     res = project.run(season, week, out_ids=out_ids, offline=offline)
     path = project.save_local(res)
     if write:
@@ -252,8 +255,12 @@ def model_project(
         typer.echo(f"run {run_id}: {res.projections.height} players → bsb.projections")
     typer.echo(f"{res.season} week {res.week} — saved {path}")
     cols = ["player_name", "position", "team", "opponent", "dk_mean", "dk_p10", "dk_p90", "ppr_mean", "anytime_td_prob"]
+    fmt = "{:24s} {:3s} {:3s} v {:3s}  DK {:5.1f} ({:4.1f}–{:4.1f})  PPR {:5.1f}  TD {:4.0%}"
     for r in res.projections.head(top).select(cols).iter_rows():
-        typer.echo("{:24s} {:2s} {:3s} v {:3s}  DK {:5.1f} ({:4.1f}–{:4.1f})  PPR {:5.1f}  TD {:4.0%}".format(*r))
+        typer.echo(fmt.format(*[0.0 if v is None else v for v in r]))
+    typer.echo("— DST —")
+    for r in res.projections.filter(pl.col("position") == "DST").head(8).select(cols).iter_rows():
+        typer.echo(fmt.format(*[0.0 if v is None else v for v in r]))
 
 
 @model_app.command("price")

@@ -50,17 +50,11 @@ create table if not exists bsb.projections (
 create index if not exists projections_week_idx   on bsb.projections (sport, season, week, player_id);
 create index if not exists projections_player_idx on bsb.projections (sport, player_id, season, week);
 
-create or replace view bsb.projections_latest as
-select p.*, r.created_at as projected_at, r.model_version
-from bsb.projections p
-join bsb.model_runs r on r.id = p.run_id
-where r.id = (
-    select r2.id from bsb.model_runs r2
-    where r2.sport = r.sport and r2.season = r.season and r2.week = r.week
-    order by r2.created_at desc limit 1
-);
+-- bsb.projections_latest (newest run per week) is defined in 0003, after the
+-- table gets its DST columns; migrations re-run every deploy, and a view over
+-- p.* cannot be "create or replace"d once the table has grown.
 
-grant select on bsb.model_runs, bsb.projections, bsb.projections_latest to anon, authenticated;
+grant select on bsb.model_runs, bsb.projections to anon, authenticated;
 grant all on bsb.model_runs, bsb.projections to service_role;
 grant all on all sequences in schema bsb to service_role;
 

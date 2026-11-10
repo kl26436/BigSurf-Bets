@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("lightgbm")
 
-from model import features, train  # noqa: E402
+from model import dst, features, train  # noqa: E402
 from model.data import NFLData  # noqa: E402
 from model.dist import Empirical, NegBin, american_to_prob, no_vig  # noqa: E402
 from model.project import fair_american  # noqa: E402
@@ -78,9 +78,26 @@ def _league(seasons=(2023, 2024, 2025), weeks=10, seed=0) -> NFLData:
         schema_overrides={"season": pl.Int32, "week": pl.Int32},
     )
     i32 = {"season": pl.Int32, "week": pl.Int32}
+    # team-level defensive box score; defense strength is a stable per-team trait
+    toughness = {t: 0.6 + 0.3 * i for i, t in enumerate(TEAMS)}
+    team = []
+    for g in sched:
+        for t, o in ((g["home_team"], g["away_team"]), (g["away_team"], g["home_team"])):
+            k = toughness[t]
+            team.append(dict(
+                season=g["season"], week=g["week"], team=t, opponent_team=o,
+                def_sacks=float(rng.poisson(2.4 * k)), def_interceptions=int(rng.poisson(0.8 * k)),
+                fumble_recovery_opp=int(rng.poisson(0.5 * k)), def_tds=int(rng.poisson(0.08)), special_teams_tds=0,
+                def_safeties=0, def_punt_blocks=0, def_fg_blocks=0, def_pat_blocks=0,
+                def_qb_hits=int(rng.poisson(5 * k)), def_tackles_for_loss=int(rng.poisson(4 * k)),
+                def_pass_defended=int(rng.poisson(4 * k)), sacks_suffered=int(rng.poisson(2.4)),
+                passing_interceptions=int(rng.poisson(0.8)), sack_fumbles_lost=0, rushing_fumbles_lost=0,
+                receiving_fumbles_lost=0, attempts=int(rng.poisson(33)),
+            ))
     return NFLData(
         stats=pl.DataFrame(stats, schema_overrides=i32), schedules=pl.DataFrame(sched, schema_overrides=i32),
         injuries=inj, snaps=pl.DataFrame(snaps, schema_overrides=i32), players=pl.DataFrame(players),
+        team_stats=pl.DataFrame(team, schema_overrides=i32),
     )
 
 
@@ -181,3 +198,34 @@ def test_odds_helpers():
     assert american_to_prob(150) == pytest.approx(0.4)
     assert no_vig(0.5238, 0.5238) == pytest.approx((0.5, 0.5))
     assert fair_american(0.6) == -150 and fair_american(0.4) == 150
+
+
+def test_dst_scoring_and_no_leak(league):
+    hist = dst.build(league)
+    # DK scoring identity on a played game
+    r = hist.filter(pl.col("sacks").is_not_null()).row(5, named=True)
+    tier = pl.DataFrame({"p": [r["points_allowed"]]}).select(dst.pa_tier(pl.col("p"))).item()
+    assert r["dk"] == pytest.approx(
+        r["sacks"] + 2 * r["interceptions"] + 2 * r["fumble_recoveries"] + 6 * r["tds"] + 2 * r["safeties"] + 2 * r["blocks"] + tier
+    )
+    tiers = pl.DataFrame({"p": [0, 6, 7, 13, 14, 20, 21, 27, 28, 34, 35]}).select(dst.pa_tier(pl.col("p")))[:, 0].to_list()
+    assert tiers == [10, 7, 4, 4, 1, 1, 0, 0, -1, -1, -4]
+    # upcoming rows carry exactly the features history has for that week, and no outcomes
+    up = dst.build(league, upcoming=(2025, 10)).filter(pl.col("is_future")).sort("team")
+    h = hist.filter((pl.col("season") == 2025) & (pl.col("week") == 10)).sort("team")
+    assert up.height == 4 and up["dk"].null_count() == 4
+    np.testing.assert_allclose(
+        h.select(dst.FEATURES).to_numpy().astype(float), up.select(dst.FEATURES).to_numpy().astype(float),
+        rtol=1e-9, atol=1e-9, equal_nan=True,
+    )
+
+
+def test_dst_fit_predict(league):
+    df = dst.build(league, upcoming=(2025, 10))
+    model = dst.fit(df, [2023, 2024, 2025], params=dict(n_estimators=40, min_child_samples=5))
+    pred = dst.predict(model, df.filter(pl.col("is_future")))
+    assert pred.height == 4 and pred["proj_dk"].is_finite().all()
+    q = pred.select([f"proj_dk_p{p}" for p in (10, 25, 50, 75, 90)]).to_numpy()
+    assert (np.diff(q, axis=1) >= -1e-9).all()
+    by = dict(zip(pred["team"], pred["proj_sacks"], strict=True))
+    assert by["DDD"] > by["AAA"]  # the tougher defense projects more sacks

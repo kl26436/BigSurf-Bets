@@ -77,3 +77,24 @@ Sides the model liked at ≥58% against a line at the player's recent average: *
 | 30%–40% | 284 | 35.0% | 37.3% |
 | 40%–50% | 124 | 44.0% | 45.2% |
 | 50%–100% | 66 | 56.8% | 66.7% |
+
+## Team defense (DST) — DraftKings points
+
+272 team-games. DST scoring is mostly noise, so the bar is ranking defenses better than their own recent average does.
+
+| | MAE | Rank corr |
+|---|---|---|
+| Model | 3.83 | 0.311 |
+| Defense's recent average | 4.09 | 0.144 |
+| Last 4 games | 4.31 | |
+| League average for everyone | 4.09 | |
+
+Each week's five highest-projected defenses averaged **8.2** DK points, the five lowest **3.3**, all defenses 5.9. The 80% band covered 81% of outcomes; bias +0.30.
+
+| Component | Model MAE | Recent avg MAE |
+|---|---|---|
+| sacks | 1.323 | 1.365 |
+| interceptions | 0.682 | 0.669 |
+| fumble recoveries | 0.630 | 0.653 |
+| tds | 0.132 | 0.120 |
+| points allowed | 7.240 | 7.690 |

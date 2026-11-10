@@ -75,14 +75,23 @@ How it works:
 - **Distributions** are fitted on leave-one-season-out predictions: negative binomial
   for counts, empirical for yards and fantasy points. That is where `dk_p10…dk_p90` and
   `P(over line)` come from.
-- **Retrains on every run** (~3 min): Tuesday's projections have already seen Monday night.
+- **Retrains on every run** (~4 min): Tuesday's projections have already seen Monday night.
 - Players Sleeper lists as Out/IR/Doubtful (latest `player_status_snapshots`) are dropped
   and their usage flows to teammates.
 
 Latest holdout (trained 2021–2025, scored on 2026 weeks 1–9):
 [docs/model/backtest_2026_w01-09.md](docs/model/backtest_2026_w01-09.md).
 
-Known gaps: no kickers/DST yet; rookies with no NFL game are not projected; weather is
+**Team defense (DST)** has its own model (`model/dst.py`): sacks, interceptions, fumble
+recoveries, return TDs and the points-allowed tier, driven mostly by the opponent (Vegas
+implied total, spread, the opposing QB's sack/INT rates). Rows land in `bsb.projections`
+with `position = 'DST'` and `player_id = 'DST_<team>'`.
+
+**DraftKings slates:** upload a salary export to `slates/` on GitHub and the `DK slate import`
+workflow loads it, then projections re-run. Players DK tags Out / IR / Doubtful on a fresh
+export are treated as inactive (DK often flags them days before the injury report).
+
+Known gaps: no kickers; rookies with no NFL game are not projected; weather is
 not a feature; red-zone/route data (needs play-by-play) not used; the benchmark against
 real sportsbook prop lines waits on `odds_snapshots` history.
 
@@ -108,7 +117,7 @@ Repository **variables** (not secrets): `SLEEPER_LEAGUE_ID`, `SLEEPER_USERNAME`.
 | Sat 22:00 | odds snapshot |
 | Sun 10:00 | odds snapshot + Sleeper status |
 | Sun 11:30 | Sleeper status (inactives for 1pm games) |
-| after each ingest | `Projections` workflow: retrain + project the upcoming week |
+| after each ingest or slate upload | `Projections` workflow: retrain + project the upcoming week |
 
 Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow).
 

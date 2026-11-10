@@ -31,6 +31,14 @@ _NAME_KEY = (
 )
 
 
+def _csv_slate_id(is_showdown: bool, starts_at: datetime | None, n_games: int, stem: str) -> str:
+    """Stable id for a CSV-imported slate, so re-importing a fresher export of
+    the same slate updates it (salaries, statuses) instead of duplicating it."""
+    if starts_at is None:
+        return f"csv-{stem}"
+    return f"csv-{'sd' if is_showdown else 'cl'}-{starts_at:%Y%m%d%H%M}-{n_games}g"
+
+
 def _team(t: str | None) -> str | None:
     if not t:
         return None
@@ -77,12 +85,13 @@ def import_csv(
         slate_id = conn.execute(
             """insert into bsb.dfs_slates (sport, site, slate_type, slate_name, site_slate_id, season, week, starts_at, roster_json)
                values (%s,'draftkings',%s,%s,%s,%s,%s,%s,%s)
-               on conflict (site, site_slate_id) do update set slate_name = excluded.slate_name
+               on conflict (site, site_slate_id) do update
+                   set slate_name = excluded.slate_name, imported_at = now()
                returning id""",
             (
                 sport, "showdown" if is_showdown else "classic",
                 slate_name or Path(path).stem,
-                site_slate_id or f"csv-{Path(path).stem}-{int(datetime.now(UTC).timestamp())}",
+                site_slate_id or _csv_slate_id(is_showdown, starts_at, len(games), Path(path).stem),
                 season_week[0] if season_week else None, season_week[1] if season_week else None,
                 starts_at, Jsonb(SHOWDOWN_ROSTER if is_showdown else CLASSIC_ROSTER),
             ),
@@ -130,6 +139,11 @@ def import_csv(
                  and {_NAME_KEY.format(col="p.display_name")} = {_NAME_KEY.format(col="s.player_name")}
                  and p.latest_team = s.team and s.position <> 'DST'""",
             (slate_id, sport),
+        )
+        # DSTs get the synthetic id the projection model writes (DST_<team>)
+        conn.execute(
+            "update bsb.dfs_salaries set player_id = 'DST_' || team where slate_id = %s and position = 'DST'",
+            (slate_id,),
         )
         unmapped = conn.execute(
             "select count(*) from bsb.dfs_salaries where slate_id=%s and player_id is null and position<>'DST'",

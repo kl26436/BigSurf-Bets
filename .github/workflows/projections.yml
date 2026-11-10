@@ -5,7 +5,7 @@ name: Projections
 #   Tue (post-MNF stats) · Fri (final injury report) · Sun 10:00 + 11:30 ET (inactives)
 on:
   workflow_run:
-    workflows: ["Weekly ingest"]
+    workflows: ["Weekly ingest", "DK slate import"]
     types: [completed]
   workflow_dispatch:
     inputs:
