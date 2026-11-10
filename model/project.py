@@ -22,8 +22,8 @@ from .dist import QUANTILES
 
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "p2.1"  # p2.1: + DST
-FIRST_SEASON = 2021
+MODEL_VERSION = "p2.2"  # p2.1: + DST · p2.2: trains from 2019
+FIRST_SEASON = 2019   # two more seasons of training data: small but consistent gain (docs/model/experiments.md)
 OUT_DIR = Path("data/projections")
 # Sleeper injury_status values that mean "will not play this week"
 SLEEPER_OUT = ("Out", "IR", "PUP", "Sus", "Doubtful", "NA", "COV", "DNR")

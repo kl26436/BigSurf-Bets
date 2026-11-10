@@ -211,7 +211,7 @@ def dk_fetch(draft_group_id: int, out: Path = Path("data/dk")):
 
 @model_app.command("backtest")
 def model_backtest(
-    train_seasons: str = typer.Option("2021-2025", "--train", help="seasons to fit on"),
+    train_seasons: str = typer.Option("2019-2025", "--train", help="seasons to fit on"),
     test: int = typer.Option(2026, help="held-out season to score"),
     weeks: str = typer.Option(None, help="week range within the test season, e.g. 1-9"),
     out: str = typer.Option(None, help="write the markdown report here"),

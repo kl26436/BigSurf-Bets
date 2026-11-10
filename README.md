@@ -53,7 +53,7 @@ bsb odds oddslink
 
 ```bash
 pip install -e ".[dev,model]"
-bsb model backtest --train 2021-2025 --test 2026 --weeks 1-9   # accuracy + calibration report
+bsb model backtest --train 2019-2025 --test 2026 --weeks 1-9   # accuracy + calibration report
 bsb model project                 # refresh data, retrain, project next week → bsb.projections
 bsb model project --no-write      # same, local only (data/projections/*.csv), no database
 bsb model price "ceedee lamb" receiving_yards 84.5             # fair odds for a prop
@@ -79,7 +79,7 @@ How it works:
 - Players Sleeper lists as Out/IR/Doubtful (latest `player_status_snapshots`) are dropped
   and their usage flows to teammates.
 
-Latest holdout (trained 2021–2025, scored on 2026 weeks 1–9):
+Latest holdout (trained 2019–2025, scored on 2026 weeks 1–9):
 [docs/model/backtest_2026_w01-09.md](docs/model/backtest_2026_w01-09.md).
 
 **Team defense (DST)** has its own model (`model/dst.py`): sacks, interceptions, fumble
