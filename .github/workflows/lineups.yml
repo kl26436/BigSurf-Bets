@@ -40,9 +40,12 @@ jobs:
         env:
           N: ${{ inputs.n || '20' }}
           MAX_EXPOSURE: ${{ inputs.max_exposure || '0.5' }}
+          EVENT: ${{ github.event_name }}
         run: |
-          bsb lineups build --mode gpp --n "$N" --max-exposure "$MAX_EXPOSURE"
-          bsb lineups build --mode cash --n 3 --max-exposure 0.67
+          # after a projections run: rebuild only if the projections (or an override) actually changed
+          stale=(); if [[ "$EVENT" == "workflow_run" ]]; then stale=(--if-stale); fi
+          bsb lineups build --mode gpp --n "$N" --max-exposure "$MAX_EXPOSURE" "${stale[@]}"
+          bsb lineups build --mode cash --n 3 --max-exposure 0.67 "${stale[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: lineups

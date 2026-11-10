@@ -4,10 +4,11 @@ NFL-first engine for DFS lineups (DraftKings), season-long fantasy (Sleeper),
 pick'em (Underdog) and sportsbook edges. Architecture is sport-agnostic; NFL
 is the first sport wired in.
 
-**Phase 1 (done):** data lands in Supabase Postgres on a schedule.
-**Phase 2 (in progress):** player-week projection model — stat means, DK/PPR
-points with an outcome distribution, and over/under probabilities for props.
-Lineup optimization and the PWA come next.
+**Phases 1–3 (done):** data lands in Supabase Postgres on a schedule; a player-week
+projection model (stat means, DK/PPR points with an outcome distribution, prop
+probabilities); a DraftKings classic lineup optimizer; market edges and a weekly scorecard.
+**Phase 4 (in progress):** the web app in `app/` — see [docs/app-setup.md](docs/app-setup.md).
+What a full review of phases 1–3 found and fixed: [docs/quality-review-2026-11-10.md](docs/quality-review-2026-11-10.md).
 
 ## Data sources
 
@@ -165,18 +166,17 @@ GitHub → Settings → Secrets and variables → Actions:
 
 Repository **variables** (not secrets): `SLEEPER_LEAGUE_ID`, `SLEEPER_USERNAME`.
 
-## Schedule (GitHub Actions, UTC)
+## Schedule
 
-| When (ET) | Job |
-|---|---|
-| Tue 06:00 | stats + injuries refresh (post-MNF), league snapshot |
-| Fri 06:00 | final injury reports, TNF stats, league snapshot |
-| Sat 22:00 | odds snapshot |
-| Sun 10:00 | odds snapshot + Sleeper status |
-| Sun 11:30 | Sleeper status (inactives for 1pm games) |
-| after each ingest or slate upload | `Projections` workflow: retrain + project the upcoming week |
+The timetable follows when information arrives (US Eastern): stats Tue 06:10 and Sat 08:10; player statuses Wed and
+Fri 17:10 (final injury reports), Thu and Mon 18:55 (inactives), and every 30 minutes Sunday 10:10–15:40; odds Thu 18:55,
+Sat 22:05, Sun 10:05, Mon 18:55. Every ingest triggers `Projections`, which re-runs only if its inputs changed, then `Lineups`.
 
-Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow).
+Two schedulers, same plan: the database (pg_cron → workflow_dispatch, `0007_scheduler.sql`, exact to the minute, needs the
+GitHub token described in docs/app-setup.md) and the cron lines in `weekly-ingest.yml` (fallback, off the hour). When both
+fire, the later one skips work already done. `Feed health` fails — and emails — when a feed goes quiet.
+
+Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow → `jobs`: `stats`, `status`, `odds`, `league` or `all`).
 
 ## Schema (`bsb.*`)
 
@@ -189,6 +189,9 @@ Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow)
 - `model_runs`, `projections` (append-only) + `projections_latest` view — Phase 2 output;
   stat columns share names with `player_week_stats` so projected-vs-actual is a plain join
 - `ingest_runs` — every job run, with row counts and errors
+- `app_users`, `app_jobs`, `projection_overrides`, `user_settings`, `dispatches` — the app's side (Phase 4)
+- `public.app_*` views and `public.bsb_*` functions — the only things the app can reach; `bsb` itself is closed
+  to the API roles (row-level security on every table)
 
 ## Layout
 
@@ -200,15 +203,17 @@ slates/          DraftKings salary exports (uploading one triggers import → pr
 docs/model/      backtest reports
 supabase/        SQL migrations
 scripts/         one-off probes
-.github/         Actions: ci, backfill, weekly-ingest
-tests/
+.github/         Actions: ci, weekly-ingest, projections, lineups, app-jobs, app (build + deploy), health, backfill
+app/             the web app (React + Vite PWA) — docs/app-setup.md
+markets/         props and game lines: fair value, edges, arbitrage
+tests/           unit tests + database tests (tests/test_db_access.py needs TEST_DATABASE_URL)
 ```
 
 ## Roadmap
 
 1. Data ✓
 2. Projections ✓: player-week + DST models, DK/PPR outputs, prop probabilities
-3. **Engines** ← you are here: DK classic optimizer ✓ (showdown next); Sleeper start/sit + waivers; Underdog vs Pinnacle edge finder
-4. PWA (Firebase Hosting, Supabase reads, web push) at bigsurf.bet
+3. Engines: DK classic optimizer ✓, market edges ✓, scorecard ✓; showdown + kickers, Underdog lines still open
+4. **PWA** ← you are here: app built (lineups, players, bets, results, league); hosting at bigsurf.bet and web push still to do
 5. Agents (Claude) to argue through picks
 6. More sports; Kalshi (the one venue with an official, sanctioned API)

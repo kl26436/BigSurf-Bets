@@ -84,18 +84,35 @@ def from_db(conn, slate_id: int) -> tuple[pl.DataFrame, dict]:
         """select s.site_player_id, s.player_id, s.player_name, s.position, s.team, s.opponent, g.kickoff_at,
                   s.salary, s.raw->>'Status',
                   p.dk_mean::float8, p.dk_std::float8, p.dk_p10::float8, p.dk_p25::float8, p.dk_p50::float8,
-                  p.dk_p75::float8, p.dk_p90::float8, p.run_id
+                  p.dk_p75::float8, p.dk_p90::float8, p.run_id, o.dk_mean::float8
            from bsb.dfs_salaries s
            join bsb.dfs_slates sl on sl.id = s.slate_id
            left join bsb.games g on g.game_id = s.game_id
            left join bsb.projections_latest p
                   on p.player_id = s.player_id and p.season = sl.season and p.week = sl.week
+           left join bsb.projection_overrides o
+                  on o.player_id = s.player_id and o.season = sl.season and o.week = sl.week
            where s.slate_id = %s""",
         (slate_id,),
     )
     cols = ["dk_id", "player_id", "name", "pos", "team", "opponent", "kickoff", "salary", "status",
-            "dk_mean", "dk_std", "dk_p10", "dk_p25", "dk_p50", "dk_p75", "dk_p90", "run_id"]
+            "dk_mean", "dk_std", "dk_p10", "dk_p25", "dk_p50", "dk_p75", "dk_p90", "run_id", "override"]
     df = pl.DataFrame(cur.fetchall(), schema=cols, orient="row", infer_schema_length=None)
     runs = df["run_id"].drop_nulls()
     info["run_id"] = int(runs[0]) if runs.len() else None
-    return _finish(df), info
+    info["n_overrides"] = int(df.filter(pl.col("override").is_not_null() & pl.col("dk_mean").is_not_null()).height)
+    return _finish(apply_overrides(df)), info
+
+
+def apply_overrides(df: pl.DataFrame) -> pl.DataFrame:
+    """Use the user's number where he set one: the mean becomes the override and
+    the whole distribution (std, p10…p90) is rescaled by the same ratio, so the
+    simulation still gives the player a sensible floor and ceiling."""
+    if "override" not in df.columns:
+        return df
+    has = pl.col("override").is_not_null() & pl.col("dk_mean").is_not_null()
+    ratio = pl.when(has).then(pl.col("override") / pl.max_horizontal(pl.col("dk_mean"), pl.lit(0.5))).otherwise(1.0)
+    return df.with_columns(
+        *[(pl.col(c) * ratio).alias(c) for c in ("dk_std", "dk_p10", "dk_p25", "dk_p50", "dk_p75", "dk_p90")],
+        pl.when(has).then(pl.col("override")).otherwise(pl.col("dk_mean")).alias("dk_mean"),
+    ).drop("override")

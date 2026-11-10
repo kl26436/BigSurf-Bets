@@ -1,0 +1,310 @@
+"""Database-level tests: migrations, the access lock-down, the app's read and
+write surface, app jobs, and the queries that decide who is out.
+
+Needs a throwaway Postgres: set TEST_DATABASE_URL to a superuser connection
+(CI starts one as a service container). Skipped when it is not set."""
+
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import psycopg
+import pytest
+
+ADMIN_URL = os.getenv("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="TEST_DATABASE_URL not set")
+
+ALICE, BOB = str(uuid.uuid4()), str(uuid.uuid4())
+TEAMS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+
+
+@pytest.fixture(scope="module")
+def db_url():
+    name = f"bsb_test_{uuid.uuid4().hex[:10]}"
+    with psycopg.connect(ADMIN_URL, autocommit=True) as c:
+        c.execute(f'create database "{name}"')
+    url = psycopg.conninfo.make_conninfo(ADMIN_URL, dbname=name)
+    with psycopg.connect(url, autocommit=True) as c:
+        c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
+    from ingest import db
+
+    assert len(db.migrate(url)) >= 8
+    assert db.migrate(url) == []          # second run applies nothing
+    _seed(url)
+    yield url
+    with psycopg.connect(ADMIN_URL, autocommit=True) as c:
+        c.execute(f'drop database if exists "{name}" with (force)')
+
+
+def _seed(url: str) -> None:
+    """A three-game slate with projections for every player on it."""
+    kick = datetime.now(UTC) + timedelta(days=3)
+    with psycopg.connect(url) as c:
+        c.execute("insert into bsb.model_runs (model_version, season, week, trained_seasons) values ('t', 2026, 10, '{2025}')")
+        c.execute(
+            "insert into bsb.dfs_slates (slate_type, slate_name, site_slate_id, season, week, starts_at) values ('classic', 'test', 't1', 2026, 10, %s)",
+            (kick,),
+        )
+        n = 0
+        for g in range(3):
+            home, away = TEAMS[2 * g], TEAMS[2 * g + 1]
+            gid = f"2026_10_{away}_{home}"
+            c.execute(
+                "insert into bsb.games (game_id, season, week, game_type, kickoff_at, home_team, away_team, spread_line, total_line) values (%s, 2026, 10, 'REG', %s, %s, %s, 3, 45)",
+                (gid, kick + timedelta(hours=3 * g), home, away),
+            )
+            for team, opp in ((home, away), (away, home)):
+                roster = [("QB", 2), ("RB", 4), ("WR", 6), ("TE", 3), ("DST", 1)]
+                for pos, count in roster:
+                    for k in range(count):
+                        n += 1
+                        pid = f"DST_{team}" if pos == "DST" else f"00-{n:07d}"
+                        name = f"{team} DST" if pos == "DST" else "Pat " + "".join(chr(97 + int(d)) for d in str(n)).title()
+                        mean = {"QB": 19, "RB": 14, "WR": 13, "TE": 9, "DST": 7}[pos] - 3.1 * k + (n % 5) * 0.3
+                        mean = max(mean, 1.5)
+                        salary = int(max(2500, round(mean * 380 + (n % 7) * 90, -2)))
+                        if pos != "DST":
+                            c.execute(
+                                "insert into bsb.players (player_id, display_name, position, latest_team, status) values (%s, %s, %s, %s, 'ACT')",
+                                (pid, name, pos, team),
+                            )
+                        c.execute(
+                            """insert into bsb.dfs_salaries (slate_id, site_player_id, player_id, player_name, team, opponent, position, salary, game_id, raw)
+                               values (1, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)""",
+                            (str(40000 + n), pid, name, team, opp, pos, salary, gid, json.dumps({"Status": ""})),
+                        )
+                        c.execute(
+                            """insert into bsb.projections (run_id, season, week, player_id, game_id, team, opponent, position,
+                                   dk_mean, dk_std, dk_p10, dk_p25, dk_p50, dk_p75, dk_p90, ppr_mean)
+                               values (1, 2026, 10, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (pid, gid, team, opp, pos, mean, mean * 0.5, mean * 0.35, mean * 0.6, mean * 0.95, mean * 1.3, mean * 1.75, mean),
+                        )
+        c.commit()
+
+
+class As:
+    """Run statements the way PostgREST would for a given caller."""
+
+    def __init__(self, url: str, role: str, sub: str | None = None):
+        self.url, self.role, self.sub = url, role, sub
+
+    def __enter__(self) -> psycopg.Connection:
+        self.conn = psycopg.connect(self.url, autocommit=True)
+        claims = json.dumps({"sub": self.sub, "email": f"{(self.sub or 'x')[:6]}@example.com"}) if self.sub else ""
+        self.conn.execute("select set_config('request.jwt.claims', %s, false)", (claims,))
+        self.conn.execute(f"set role {self.role}")
+        return self.conn
+
+    def __exit__(self, *a):
+        self.conn.close()
+
+
+VIEWS = ["app_feed_health", "app_model_runs", "app_slates", "app_pool", "app_projections", "app_games", "app_lineup_sets",
+         "app_lineups", "app_lineup_players", "app_line_quotes", "app_prop_edges", "app_scorecards", "app_player_log",
+         "app_my_roster", "app_free_agents", "app_jobs", "app_overrides"]
+
+
+def test_every_table_has_row_level_security(db_url):
+    with psycopg.connect(db_url) as c:
+        open_tables = c.execute(
+            """select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+               where n.nspname = 'bsb' and c.relkind = 'r' and not c.relrowsecurity"""
+        ).fetchall()
+    assert open_tables == []
+
+
+def test_anonymous_callers_get_nothing(db_url):
+    with As(db_url, "anon") as c:
+        for target in ["bsb.games", "bsb.projections", "bsb.fantasy_roster_snapshots", *[f"public.{v}" for v in VIEWS]]:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(f"select 1 from {target} limit 1")
+        for call in ["public.bsb_whoami()", "public.bsb_claim_owner()", "public.bsb_request_job('project')", "public.bsb_get_settings()"]:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(f"select {call}")
+
+
+def test_signed_in_stranger_sees_no_rows_and_cannot_write(db_url):
+    with psycopg.connect(db_url) as c:   # someone else already owns the app
+        c.execute("insert into bsb.app_users (user_id, role) values (%s, 'owner') on conflict do nothing", (ALICE,))
+        c.commit()
+    with As(db_url, "authenticated", BOB) as c:
+        assert c.execute("select public.bsb_whoami()").fetchone()[0]["member"] is False
+        assert c.execute("select public.bsb_claim_owner()").fetchone()[0] == "closed"
+        for v in VIEWS:
+            rows = c.execute(f"select * from public.{v}").fetchall()
+            assert all(r[5] is None for r in rows) if v == "app_feed_health" else rows == [], v
+        assert c.execute("select count(*) from bsb.dfs_salaries").fetchone()[0] == 0
+        for call in ["public.bsb_request_job('project')", "public.bsb_set_entered(1, true)",
+                     "public.bsb_set_override(2026, 10, 'x', 12)", "public.bsb_save_settings('{}'::jsonb)"]:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(f"select {call}")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("insert into bsb.app_users (user_id) values (%s)", (BOB,))
+
+
+def test_first_sign_in_claims_the_app(db_url):
+    with psycopg.connect(db_url) as c:
+        c.execute("delete from bsb.app_users")
+        c.commit()
+    with As(db_url, "authenticated", ALICE) as c:
+        assert c.execute("select public.bsb_whoami()").fetchone()[0]["claim_open"] is True
+        assert c.execute("select public.bsb_claim_owner()").fetchone()[0] == "owner"
+        assert c.execute("select public.bsb_claim_owner()").fetchone()[0] == "member"
+    with As(db_url, "authenticated", BOB) as c:
+        assert c.execute("select public.bsb_claim_owner()").fetchone()[0] == "closed"
+
+
+def test_member_reads_the_slate_and_writes_through_functions(db_url):
+    with As(db_url, "authenticated", ALICE) as c:
+        assert c.execute("select count(*) from public.app_pool where slate_id = 1").fetchone()[0] == 96
+        assert c.execute("select count(*) from public.app_projections").fetchone()[0] == 96
+        assert c.execute("select count(*) from public.app_games").fetchone()[0] == 3
+        home = c.execute("select implied_total, team_spread from public.app_pool where team = 'AAA' limit 1").fetchone()
+        assert (float(home[0]), float(home[1])) == (24.0, -3.0)      # home favoured by 3, total 45
+
+        # override → the pool shows it, removing it restores the model's number
+        pid, base = c.execute("select player_id, dk_mean from public.app_pool where pos = 'WR' order by dk_mean desc limit 1").fetchone()
+        c.execute("select public.bsb_set_override(2026, 10, %s, 30, 'gut')", (pid,))
+        assert float(c.execute("select dk_mean from public.app_pool where player_id = %s", (pid,)).fetchone()[0]) == 30.0
+        c.execute("select public.bsb_set_override(2026, 10, %s, null)", (pid,))
+        assert c.execute("select dk_mean from public.app_pool where player_id = %s", (pid,)).fetchone()[0] == base
+
+        # a job is recorded; with no GitHub token configured it says so instead of pretending
+        job = c.execute("select public.bsb_request_job('build_lineups', %s::jsonb)", (json.dumps({"n": 3}),)).fetchone()[0]
+        status, err = c.execute("select status, error from public.app_jobs where id = %s", (job,)).fetchone()
+        assert status == "needs_setup" and "github_pat" in err
+        with pytest.raises(psycopg.errors.CheckViolation):
+            c.execute("select public.bsb_request_job('drop_everything')")
+
+        c.execute("select public.bsb_save_settings(%s::jsonb)", (json.dumps({"bankroll_dfs": 300}),))
+        assert c.execute("select public.bsb_get_settings()").fetchone()[0] == {"bankroll_dfs": 300}
+        # direct writes stay closed even for a member
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("update bsb.dfs_salaries set salary = 1")
+
+
+def _legal_nine(c) -> list[str]:
+    ids = []
+    for pos, k in (("QB", 1), ("RB", 2), ("WR", 3), ("TE", 1)):
+        ids += [r[0] for r in c.execute(
+            "select dk_id from public.app_pool where pos = %s order by salary limit %s", (pos, k)).fetchall()]
+    ids.append(c.execute("select dk_id from public.app_pool where pos = 'RB' order by salary offset 2 limit 1").fetchone()[0])
+    ids.append(c.execute("select dk_id from public.app_pool where pos = 'DST' order by salary limit 1").fetchone()[0])
+    return ids
+
+
+def test_saving_a_hand_built_lineup_is_checked(db_url):
+    with As(db_url, "authenticated", ALICE) as c:
+        nine = _legal_nine(c)
+        set_id = c.execute("select public.bsb_save_lineup(1, %s, 'mine')", (nine,)).fetchone()[0]
+        source, n = c.execute("select source, n_lineups from public.app_lineup_sets where id = %s", (set_id,)).fetchone()
+        assert (source, n) == ("manual", 1)
+        slots = [r[0] for r in c.execute("select slot from public.app_lineup_players where set_id = %s order by slot_no", (set_id,))]
+        assert slots == ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
+        salary, proj = c.execute("select salary, proj from public.app_lineups where set_id = %s", (set_id,)).fetchone()
+        assert salary <= 50000 and proj > 0
+        for bad, why in [(nine[:8], "nine"), ([nine[1], *nine[1:]], "nine different"), ([nine[8], *nine[1:8], nine[0]], "slot")]:
+            with pytest.raises(psycopg.errors.RaiseException, match=why):
+                c.execute("select public.bsb_save_lineup(1, %s)", (bad,))
+        dear = [r[0] for r in c.execute("select dk_id from public.app_pool where pos = 'QB' order by salary desc limit 1")]
+        c.execute("select public.bsb_set_entered(%s, true)", (set_id,))
+        assert c.execute("select entered from public.app_lineup_sets where id = %s", (set_id,)).fetchone()[0] is True
+        assert dear
+
+
+def test_app_job_builds_a_lineup_set(db_url, monkeypatch):
+    from typer.testing import CliRunner
+
+    from ingest import cli
+
+    with As(db_url, "authenticated", ALICE) as c:
+        lock = c.execute("select dk_id from public.app_pool where pos = 'TE' order by dk_mean limit 1").fetchone()[0]
+        ban = c.execute("select dk_id from public.app_pool where pos = 'QB' order by dk_mean desc limit 1").fetchone()[0]
+        payload = {"slate_id": 1, "mode": "gpp", "n": 4, "max_exposure": 0.75, "min_unique": 2, "lock": [lock], "exclude": [ban], "label": "test", "min_salary": 0}
+        job = c.execute("select public.bsb_request_job('build_lineups', %s::jsonb)", (json.dumps(payload),)).fetchone()[0]
+    monkeypatch.setenv("SUPABASE_DB_URL", db_url)
+    res = CliRunner().invoke(cli.app, ["app", "run-job", str(job)])
+    assert res.exit_code == 0, res.output
+    with As(db_url, "authenticated", ALICE) as c:
+        status, result = c.execute("select status, result from public.app_jobs where id = %s", (job,)).fetchone()
+        assert status == "done" and result["n_lineups"] == 4
+        sid = result["set_id"]
+        assert c.execute("select source, label, job_id from public.app_lineup_sets where id = %s", (sid,)).fetchone() == ("user", "test", job)
+        used = c.execute("select dk_id, count(*) from public.app_lineup_players where set_id = %s group by 1", (sid,)).fetchall()
+        counts = dict(used)
+        assert counts[lock] == 4 and ban not in counts
+        assert max(v for k, v in counts.items() if k != lock) <= 3          # 75% of 4
+        # a bad request fails cleanly and says why
+        job2 = c.execute("select public.bsb_request_job('build_lineups', %s::jsonb)", (json.dumps({"slate_id": 1, "n": 9999}),)).fetchone()[0]
+    assert CliRunner().invoke(cli.app, ["app", "run-job", str(job2)]).exit_code == 1
+    with As(db_url, "authenticated", ALICE) as c:
+        status, err = c.execute("select status, error from public.app_jobs where id = %s", (job2,)).fetchone()
+        assert status == "failed" and "between" in err
+
+
+def test_who_is_out_uses_this_weeks_information(db_url):
+    """Sleeper's Out/Doubtful is a game designation that lingers into the next
+    week; DraftKings' tag is about the coming slate."""
+    from model import project
+
+    now = datetime.now(UTC)
+    with psycopg.connect(db_url) as c:
+        ids = [r[0] for r in c.execute("select player_id from bsb.dfs_salaries where position = 'WR' and team = 'AAA' order by salary").fetchall()]
+        stale_cleared, stale_dk_out, long_term, fresh, healthy, far = ids[:6]
+        far_team_player = c.execute("select player_id from bsb.dfs_salaries where position = 'WR' and team = 'EEE' limit 1").fetchone()[0]
+
+        def snap(pid, status, team="AAA", hours_ago=1.0):
+            c.execute(
+                "insert into bsb.player_status_snapshots (captured_at, player_id, source_player_id, team, position, injury_status) values (%s, %s, %s, %s, 'WR', %s)",
+                (now - timedelta(hours=hours_ago), pid, "s" + pid, team, status),
+            )
+
+        # AAA kicks off in 3 days: an "Out" seen now is older than the 28h designation window → stale
+        snap(stale_cleared, "Out")
+        snap(stale_dk_out, "Out")
+        snap(long_term, "IR")
+        snap(healthy, None)
+        snap(far, "Doubtful", hours_ago=60)                 # too old to count at all (48h)
+        c.execute("update bsb.dfs_salaries set raw = '{\"Status\": \"Q\"}' where player_id = %s", (stale_cleared,))
+        c.execute("update bsb.dfs_salaries set raw = '{\"Status\": \"OUT\"}' where player_id = %s", (stale_dk_out,))
+        # a team that kicks off within the window: its Out is this week's
+        c.execute("update bsb.games set kickoff_at = %s where home_team = 'EEE' or away_team = 'EEE'", (now + timedelta(hours=20),))
+        snap(far_team_player, "Out", team="EEE")
+        c.commit()
+        out, cleared = project.inactive_ids(c)
+        assert stale_cleared not in out and stale_cleared in cleared     # DK says Questionable → projected
+        assert {stale_dk_out, long_term, far_team_player} <= out
+        assert healthy not in out and far not in out and fresh not in out
+        assert not (out & cleared)
+        h1 = project.inputs_fingerprint(c, out, cleared, "sha")
+        assert h1 == project.inputs_fingerprint(c, set(out), set(cleared), "sha")
+        assert h1 != project.inputs_fingerprint(c, out | {"someone"}, cleared, "sha")
+        c.execute("delete from bsb.player_status_snapshots")
+        c.execute("update bsb.dfs_salaries set raw = '{\"Status\": \"\"}'")
+        c.commit()
+
+
+def test_sleeper_players_are_matched_without_a_gsis_id(db_url):
+    from ingest.sleeper import IdResolver
+
+    with psycopg.connect(db_url) as c:
+        pid, name = c.execute("select player_id, display_name from bsb.players where latest_team = 'BBB' and position = 'RB' limit 1").fetchone()
+        r = IdResolver(c)
+        assert r.resolve("9001", {"gsis_id": f" {pid} "}) == (pid, "gsis")
+        assert r.resolve("9002", {"full_name": name + " Jr.", "team": "BBB", "position": "RB"}) == (pid, "name_team")
+        assert r.resolve("9003", {"full_name": name, "team": "ZZZ", "position": "RB"}) == (pid, "name_pos")   # traded
+        assert r.resolve("9004", {"full_name": "Nobody Atall", "team": "BBB", "position": "RB"}) == (None, "none")
+
+
+def test_feed_health_flags_a_quiet_feed(db_url):
+    with psycopg.connect(db_url) as c:
+        c.execute("insert into bsb.ingest_runs (job, started_at, finished_at, ok, rows_written) values ('sleeper.status', now() - interval '5 days', now() - interval '5 days', true, 900)")
+        c.execute("insert into bsb.ingest_runs (job, started_at, finished_at, ok, rows_written) values ('odds.oddslink', now() - interval '1 hour', now() - interval '1 hour', true, 500)")
+        c.execute("insert into bsb.ingest_runs (job, started_at, finished_at, ok, rows_written, detail) values ('odds.oddslink', now(), now(), false, 0, '{\"error\": \"boom\"}')")
+        c.commit()
+        state = dict(c.execute("select job, state from public.app_feed_health").fetchall())
+    assert state["sleeper.status"] == "stale" and state["odds.oddslink"] == "failing" and state["nflverse.player_stats"] == "never"

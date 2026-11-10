@@ -1,0 +1,48 @@
+name: App jobs
+
+# Work the web app asks for: a lineup set built with the user's locks, excludes
+# and limits, or a salary export uploaded from the phone. The app files a row in
+# bsb.app_jobs; the database dispatches this workflow with its id (migration 0007).
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "bsb.app_jobs id"
+        required: true
+
+permissions:
+  contents: read
+  actions: write      # a new slate starts the Projections workflow
+
+concurrency:
+  group: app-job-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[model]"
+      - name: Apply migrations
+        run: bsb db migrate
+      - name: Run the job
+        id: job
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          [[ "$JOB_ID" =~ ^[0-9]+$ ]] || { echo "job_id must be a number"; exit 1; }
+          bsb app run-job "$JOB_ID"
+      - name: Project the new slate
+        if: steps.job.outputs.needs_projection == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run projections.yml --ref main --repo "$GITHUB_REPOSITORY"

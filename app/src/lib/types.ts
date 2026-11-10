@@ -1,0 +1,214 @@
+export type Pos = "QB" | "RB" | "WR" | "TE" | "DST";
+
+export interface PoolPlayer {
+  slate_id: number;
+  dk_id: string;
+  player_id: string | null;
+  name: string;
+  pos: Pos;
+  team: string;
+  opponent: string | null;
+  game_id: string | null;
+  kickoff_at: string | null;
+  salary: number;
+  avg_points: number | null;
+  dk_status: string | null;
+  headshot_url: string | null;
+  injury_status: string | null;
+  model_dk_mean: number | null;
+  override_dk_mean: number | null;
+  override_note: string | null;
+  dk_mean: number | null;
+  dk_p10: number | null;
+  dk_p25: number | null;
+  dk_p50: number | null;
+  dk_p75: number | null;
+  dk_p90: number | null;
+  ppr_mean: number | null;
+  anytime_td_prob: number | null;
+  implied_total: number | null;
+  team_spread: number | null;
+  total_line: number | null;
+  projected_at: string | null;
+  [stat: string]: unknown;
+}
+
+export interface Slate {
+  id: number;
+  slate_name: string | null;
+  slate_type: string;
+  season: number;
+  week: number;
+  starts_at: string | null;
+  salary_cap: number;
+  imported_at: string;
+  upcoming: boolean;
+  n_players: number;
+  n_games: number;
+}
+
+export interface Game {
+  game_id: string;
+  season: number;
+  week: number;
+  kickoff_at: string | null;
+  home_team: string;
+  away_team: string;
+  home_score: number | null;
+  away_score: number | null;
+  spread_line: number | null;
+  total_line: number | null;
+  home_implied: number | null;
+  away_implied: number | null;
+}
+
+export interface FeedHealth {
+  job: string;
+  label: string;
+  sort: number;
+  last_ok_at: string | null;
+  last_rows: number | null;
+  age_hours: number | null;
+  max_age_hours: number;
+  state: "ok" | "stale" | "failing" | "never";
+  last_error: string | null;
+}
+
+export interface LineupSet {
+  id: number;
+  created_at: string;
+  slate_id: number;
+  run_id: number | null;
+  mode: "gpp" | "cash" | "manual";
+  source: "auto" | "user" | "manual";
+  entered: boolean;
+  label: string | null;
+  job_id: number | null;
+  n_lineups: number;
+  settings: Record<string, unknown> | null;
+  summary: Record<string, unknown> | null;
+  on_latest_projections: boolean;
+}
+
+export interface LineupRow {
+  set_id: number;
+  lineup_no: number;
+  salary: number;
+  proj: number | null;
+  sim_mean: number | null;
+  p10: number | null;
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+  best_of_set_pct: number | null;
+  actual_points: number | null;
+}
+
+export interface LineupPlayer {
+  set_id: number;
+  lineup_no: number;
+  slot_no: number;
+  slot: string;
+  dk_id: string;
+  player_id: string | null;
+  name: string;
+  pos: Pos;
+  team: string | null;
+  opponent: string | null;
+  salary: number;
+  dk_mean: number | null;
+  status: string | null;
+}
+
+export interface LineQuote {
+  captured_at: string;
+  game_id: string;
+  home_team: string;
+  away_team: string;
+  kickoff_at: string | null;
+  market: "moneyline" | "spread" | "total";
+  number: number;
+  outcome: "home" | "away" | "over" | "under";
+  line: number | null;
+  bookmaker: string;
+  price_american: number | null;
+  price_decimal: number;
+  fair_prob: number | null;
+  ev: number | null;
+  is_best: boolean | null;
+  arb_pct: number | null;
+}
+
+export interface PropEdge {
+  game_id: string;
+  player_id: string;
+  player_name: string | null;
+  team: string | null;
+  stat: string;
+  line: number;
+  bookmaker: string;
+  over_decimal: number | null;
+  under_decimal: number | null;
+  proj_mean: number | null;
+  model_over: number | null;
+  fair_over: number | null;
+  ev_over_fair: number | null;
+  ev_under_fair: number | null;
+  ev_over_model: number | null;
+  ev_under_model: number | null;
+  captured_at: string | null;
+}
+
+export interface Job {
+  id: number;
+  created_at: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  status: "queued" | "needs_setup" | "dispatched" | "running" | "done" | "failed";
+  started_at: string | null;
+  finished_at: string | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
+
+export interface RosterPlayer {
+  sleeper_id: string;
+  player_id: string | null;
+  name: string;
+  pos: string | null;
+  team: string | null;
+  is_starter: boolean;
+  opponent: string | null;
+  kickoff_at: string | null;
+  ppr_mean: number | null;
+  ppr_p10: number | null;
+  ppr_p90: number | null;
+  injury_status: string | null;
+}
+
+export interface Scorecard {
+  season: number;
+  week: number;
+  created_at: string;
+  metrics: {
+    projections?: { n_played: number; did_not_play: number; by_position: Record<string, { n: number; mae: number; bias: number; rank_corr: number | null; cover_p10_p90: number; vs_dk_avg?: { n: number; mae_model: number; mae_dk_avg: number } }> };
+    lineups?: { set_id: number; mode: string; n: number; n_complete: number; avg_actual: number; best_actual: number; avg_projected: number; in_p10_p90: number }[];
+    props?: { n: number; vs_pinnacle?: { n: number; logloss_model: number; logloss_pinnacle: number }; model_edges?: { n: number; wins: number; units: number; roi: number } };
+  };
+}
+
+export interface Settings {
+  balance_dfs: number;
+  balance_bets: number;
+  stake_fraction: number;   // share of the full Kelly stake, 0–1
+  max_stake_pct: number;    // never more than this share of the balance on one bet
+  books: string[];          // sportsbooks the user can actually bet at
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  balance_dfs: 300,
+  balance_bets: 200,
+  stake_fraction: 0.25,
+  max_stake_pct: 0.05,
+  books: ["betmgm", "circa", "draftkings", "fanduel", "caesars"],
+};

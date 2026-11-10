@@ -1,23 +1,41 @@
 name: Weekly ingest
 
-# All times UTC. NFL week: TNF Thu, Sun 1pm/4pm/8pm ET, MNF Mon.
-# nflverse stats finalize overnight after each game day.
+# What runs when (US Eastern; NFL week = Thu night, Sun 1pm / 4pm / night, Mon night):
+#   Tue 06:10   stats, league, status   Monday night is in nflverse
+#   Wed 17:10   status                  Thursday game's final injury report
+#   Thu 18:55   status, odds            inactives + props before Thursday kickoff
+#   Fri 17:10   status                  final injury reports for Sunday
+#   Sat 08:10   stats, league, status   Friday reports + Thursday stats in nflverse
+#   Sat 22:05   odds, status
+#   Sun 10:05   odds, status
+#   Sun 10:10 → 15:40 every 30 min      status: inactives (1pm games 11:30, 4pm games ~2:40)
+#   Sun night, Mon 18:55                status (+ odds Monday)
+#
+# The precise timetable lives in Supabase (pg_cron → workflow_dispatch, migration
+# 0007) because GitHub's cron drops and delays runs, worst at the top of the hour.
+# The cron lines below are the fallback: same plan, a few minutes later and never
+# on the hour. When both fire, the later one sees the work is done and skips it
+# (--min-gap), so the odds quota is never spent twice.
 on:
   schedule:
-    - cron: "0 11 * * 2"    # Tue 06:00 ET — full stats/injuries refresh after MNF
-    - cron: "0 11 * * 5"    # Fri 06:00 ET — final injury reports + TNF stats
-    - cron: "0 3  * * 0"    # Sat 22:00 ET (Sun 03:00 UTC) — odds snapshot
-    - cron: "0 15 * * 0"    # Sun 10:00 ET — odds + Sleeper status (pre-inactives)
-    - cron: "30 16 * * 0"   # Sun 11:30 ET — Sleeper status (inactives drop ~11:30 ET for 1pm)
-    - cron: "0 23 * * 4"    # Thu 18:00 ET — odds snapshot before Thursday night (props are only posted near game day)
-    - cron: "0 23 * * 1"    # Mon 18:00 ET — odds snapshot before Monday night
+    - cron: "28 11 * * 2"
+    - cron: "28 22 * * 3"
+    - cron: "13 0 * * 5"          # Thu 19:13 ET
+    - cron: "28 22 * * 5"
+    - cron: "28 13 * * 6"
+    - cron: "23 3 * * 0"          # Sat 22:23 ET
+    - cron: "23 15 * * 0"         # Sun 10:23 ET
+    - cron: "22,52 15-20 * * 0"   # Sun waves
+    - cron: "13 0 * * 1"          # Sun 19:13 ET
+    - cron: "13 0 * * 2"          # Mon 19:13 ET
   workflow_dispatch:
     inputs:
-      job:
-        description: "Which job"
-        type: choice
-        options: [all, stats, status, odds, league]
-        default: all
+      jobs:
+        description: "Comma list of: stats, status, odds, league (or all)"
+        default: "all"
+      app_job_id:
+        description: "bsb.app_jobs id to mark finished (set by the app)"
+        required: false
 
 concurrency:
   group: ingest
@@ -42,40 +60,45 @@ jobs:
           cache: pip
       - run: pip install -e .
 
+      # Decide from the cron line that fired — never from the clock, which is
+      # wrong whenever GitHub starts a scheduled run late.
       - name: Decide what to run
         id: plan
         shell: bash
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          JOBS_INPUT: ${{ inputs.jobs }}
         run: |
-          job="${{ inputs.job || 'auto' }}"
-          dow=$(date -u +%u)   # 1=Mon..7=Sun
-          hour=$(date -u +%H)
-          stats=false; status=false; odds=false; league=false
-          case "$job" in
-            all)    stats=true; status=true; odds=true; league=true ;;
-            stats)  stats=true ;;
-            status) status=true ;;
-            odds)   odds=true ;;
-            league) league=true ;;
-            auto)
-              if [[ "$dow" == "2" || "$dow" == "5" ]]; then stats=true; league=true; fi
-              # Sunday (dow=7 in date +%u) hosts all three weekend crons
-              if [[ "$dow" == "7" ]]; then odds=true; status=true; fi
-              if [[ "$dow" == "7" && "$hour" == "16" ]]; then odds=false; fi
-              if [[ "$hour" == "23" && ( "$dow" == "4" || "$dow" == "1" ) ]]; then odds=true; fi
-              ;;
-          esac
-          echo "stats=$stats"   >> "$GITHUB_OUTPUT"
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          echo "odds=$odds"     >> "$GITHUB_OUTPUT"
-          echo "league=$league" >> "$GITHUB_OUTPUT"
+          gap_status=0; gap_other=0
+          if [[ -n "$SCHEDULE" ]]; then
+            gap_status=14; gap_other=120       # fallback run: skip what the database-driven run already did
+            case "$SCHEDULE" in
+              "28 11 * * 2"|"28 13 * * 6") jobs="stats,league,status" ;;
+              "13 0 * * 5"|"13 0 * * 2")   jobs="status,odds" ;;
+              "23 3 * * 0"|"23 15 * * 0")  jobs="odds,status" ;;
+              *)                           jobs="status" ;;
+            esac
+          else
+            jobs="${JOBS_INPUT:-all}"
+          fi
+          [[ "$jobs" == "all" ]] && jobs="stats,league,status,odds"
+          for j in stats status odds league; do
+            if [[ ",$jobs," == *",$j,"* ]]; then echo "$j=true" >> "$GITHUB_OUTPUT"; else echo "$j=false" >> "$GITHUB_OUTPUT"; fi
+          done
+          echo "gap_status=$gap_status" >> "$GITHUB_OUTPUT"
+          echo "gap_other=$gap_other" >> "$GITHUB_OUTPUT"
+          echo "running: $jobs (schedule: ${SCHEDULE:-manual})"
+
+      - name: Apply migrations
+        run: bsb db migrate
 
       - name: nflverse weekly refresh
         if: steps.plan.outputs.stats == 'true'
-        run: bsb nfl weekly
+        run: bsb nfl weekly --min-gap "${{ steps.plan.outputs.gap_other }}"
 
       - name: Sleeper status snapshot
         if: always() && steps.plan.outputs.status == 'true'
-        run: bsb sleeper status
+        run: bsb sleeper status --min-gap "${{ steps.plan.outputs.gap_status }}"
 
       - name: Sleeper league snapshot
         if: always() && steps.plan.outputs.league == 'true' && env.SLEEPER_LEAGUE_ID != ''
@@ -83,12 +106,21 @@ jobs:
 
       - name: Odds — OddsPapi
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
-        run: bsb odds oddspapi --days 7
+        run: bsb odds oddspapi --days 7 --min-gap "${{ steps.plan.outputs.gap_other }}"
 
       - name: Odds — OddsLink
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
-        run: bsb odds oddslink
+        run: bsb odds oddslink --min-gap "${{ steps.plan.outputs.gap_other }}"
 
-      - name: Row counts
+      - name: Feed health
         if: always()
-        run: bsb db ping
+        run: bsb db health
+
+      - name: Tell the app
+        if: always() && inputs.app_job_id != ''
+        env:
+          APP_JOB_ID: ${{ inputs.app_job_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          [[ "$APP_JOB_ID" =~ ^[0-9]+$ ]] || exit 0
+          if [[ "$OUTCOME" == "success" ]]; then bsb app finish-job "$APP_JOB_ID" --ok; else bsb app finish-job "$APP_JOB_ID" --failed; fi

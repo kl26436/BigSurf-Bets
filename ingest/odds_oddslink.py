@@ -39,8 +39,18 @@ class OddsLink:
         return self.get("/sports/nfl/odds", **params)
 
 
+def to_decimal(price: float) -> float | None:
+    """OddsLink quotes American odds (-110, +145). Anything with |price| >= 100
+    is American: a decimal price of 100+ does not occur on a game line. (The
+    first version only converted negatives, so every plus-money quote was stored
+    as a 100-to-1 shot: +145 became decimal 145.0.)"""
+    if abs(price) >= 100:
+        return 1 + price / 100 if price > 0 else 1 + 100 / abs(price)
+    return price if price > 1.0 else None
+
+
 def _iter_prices(ev: dict):
-    """Yield (book, market, outcome, line, decimal) tuples. OddsLink's exact
+    """Yield (book, market, outcome, line, decimal, quoted) tuples. OddsLink's exact
     schema varies by version; handle the common bookmakers→markets→outcomes nest
     and keep everything else in raw."""
     for bk in ev.get("bookmakers", []) or []:
@@ -60,10 +70,11 @@ def _iter_prices(ev: dict):
                 price = o.get("price") or o.get("decimal") or o.get("odds")
                 if price is None:
                     continue
-                price = float(price)
-                if price < 1.0 or price > 1000:  # looks american
-                    price = 1 + price / 100 if price > 0 else 1 + 100 / abs(price)
-                yield book, market, outcome, o.get("point") or o.get("line") or o.get("handicap"), price
+                quoted = float(price)
+                price = to_decimal(quoted)
+                if price is None:
+                    continue
+                yield book, market, outcome, o.get("point") or o.get("line") or o.get("handicap"), price, quoted
 
 
 def snapshot_upcoming(conn: psycopg.Connection, api_key: str, sport: str = "nfl") -> int:
@@ -78,7 +89,7 @@ def snapshot_upcoming(conn: psycopg.Connection, api_key: str, sport: str = "nfl"
             start = ev.get("commence_time") or ev.get("start_time") or ev.get("startTime")
             start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")) if isinstance(start, str) else None
             gid = match_game_id(conn, home, away, start_dt, sport)
-            for book, market, outcome, line, price in _iter_prices(ev):
+            for book, market, outcome, line, price, quoted in _iter_prices(ev):
                 cb = canonical_book(book or "")
                 if not cb:
                     continue
@@ -89,7 +100,7 @@ def snapshot_upcoming(conn: psycopg.Connection, api_key: str, sport: str = "nfl"
                         market=market, period="full", player_id=None, prop_type=None,
                         outcome=outcome, line=float(line) if line is not None else None,
                         price_decimal=price, price_american=decimal_to_american(price),
-                        is_live=False, raw={"book_raw": book},
+                        is_live=False, raw={"book_raw": book, "quoted": quoted},
                     )
                 )
         if rows:

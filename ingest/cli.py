@@ -20,6 +20,7 @@ dk_app = typer.Typer(no_args_is_help=True, help="DraftKings salaries")
 model_app = typer.Typer(no_args_is_help=True, help="Projection model (needs the [model] extra)")
 edges_app = typer.Typer(no_args_is_help=True, help="Market edges: props and game lines")
 lineups_app = typer.Typer(no_args_is_help=True, help="DraftKings lineup optimizer (needs the [model] extra)")
+app_app = typer.Typer(no_args_is_help=True, help="Work the web app asks for (bsb.app_jobs)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
 app.add_typer(sleeper_app, name="sleeper")
@@ -28,6 +29,7 @@ app.add_typer(dk_app, name="dk")
 app.add_typer(model_app, name="model")
 app.add_typer(lineups_app, name="lineups")
 app.add_typer(edges_app, name="edges")
+app.add_typer(app_app, name="app")
 
 log = logging.getLogger("bsb")
 
@@ -47,8 +49,27 @@ def _seasons(seasons: str | None) -> list[int]:
 
 @db_app.command()
 def migrate():
-    """Apply supabase/migrations/*.sql (idempotent)."""
-    _db.migrate(settings().db_url)
+    """Apply the supabase/migrations/*.sql files not applied yet."""
+    done = _db.migrate(settings().db_url)
+    typer.echo("applied: " + (", ".join(done) if done else "nothing new"))
+
+
+@db_app.command()
+def health(strict: bool = typer.Option(False, help="exit 1 if a feed is stale, failing or has never run")):
+    """Freshness of every feed — the same table the app shows."""
+    with _db.connect(settings().db_url) as conn:
+        rows = conn.execute(
+            "select label, state, age_hours, max_age_hours, last_rows, last_error from public.app_feed_health order by sort"
+        ).fetchall()
+    bad = []
+    for label, state, age, max_age, n, err in rows:
+        age_s = f"{age:>6}h" if age is not None else "      –"
+        typer.echo(f"{state.upper():8s} {label:24s} {age_s} (limit {max_age}h)  rows {n if n is not None else '–'}  {err or ''}")
+        if state != "ok" and label != "Lineups":   # lineups only exist while a slate is open
+            bad.append(label)
+    if bad and strict:
+        typer.echo("NOT HEALTHY: " + ", ".join(bad), err=True)
+        raise typer.Exit(1)
 
 
 @db_app.command()
@@ -238,6 +259,7 @@ def model_project(
     write: bool = typer.Option(True, help="write to Supabase (bsb.projections); --no-write for a local dry run"),
     offline: bool = typer.Option(False, help="use cached nflverse files only"),
     top: int = typer.Option(25, help="rows to print"),
+    if_stale: bool = typer.Option(False, help="do nothing when no input has changed since the last run"),
 ):
     """Refresh data, retrain, project the upcoming week. With --write, players
     Sleeper lists as out are excluded and their usage is redistributed."""
@@ -248,14 +270,20 @@ def model_project(
     from model import project
 
     out_ids: set[str] = set()
+    cleared: set[str] = set()
+    fingerprint = None
     if write:
         with _db.connect(settings().db_url) as conn:
-            out_ids = project.sleeper_out_ids(conn) | project.dk_out_ids(conn)
-    res = project.run(season, week, out_ids=out_ids, offline=offline)
+            out_ids, cleared = project.inactive_ids(conn)
+            fingerprint = project.inputs_fingerprint(conn, out_ids, cleared, os.getenv("GITHUB_SHA"))
+            if if_stale and season is None and week is None and fingerprint == project.latest_fingerprint(conn):
+                typer.echo("nothing new since the last projection run (same statuses, stats, odds, slate) — skipped")
+                return
+    res = project.run(season, week, out_ids=out_ids, offline=offline, force_ids=cleared)
     path = project.save_local(res)
     if write:
         with _db.connect(settings().db_url) as conn:
-            run_id = project.write_db(conn, res, git_sha=os.getenv("GITHUB_SHA"))
+            run_id = project.write_db(conn, res, git_sha=os.getenv("GITHUB_SHA"), inputs_hash=fingerprint)
             typer.echo(f"run {run_id}: {res.projections.height} players → bsb.projections")
             # price the market with the model that was just fitted; never let a
             # market hiccup cost us the projections that are already saved
@@ -372,6 +400,7 @@ def lineups_build(
     projections: str = typer.Option(None, help="local mode: projections parquet from `bsb model project`"),
     write: bool = typer.Option(True, help="save the set to Supabase (ignored in local mode)"),
     seed: int = typer.Option(7),
+    if_stale: bool = typer.Option(False, help="skip when the newest automatic set already uses the newest projections"),
 ):
     """Build a set of DK classic lineups from the latest projections."""
     import polars as pl
@@ -393,6 +422,11 @@ def lineups_build(
                 typer.echo("no upcoming DraftKings classic slate in bsb.dfs_slates — upload a salary export to slates/")
                 raise typer.Exit(0)
             pool, info = slate.from_db(conn, slate_id)
+            if if_stale and write:
+                from optimizer.jobs import auto_set_is_current
+                if auto_set_is_current(conn, slate_id, mode, info.get("run_id")):
+                    typer.echo(f"the newest {mode} set for slate {slate_id} already uses the newest projections — skipped")
+                    raise typer.Exit(0)
         label = f"slate{slate_id}"
     if pool.is_empty():
         typer.echo("no projected players on this slate yet — has `bsb model project` run for its week?")
@@ -451,6 +485,74 @@ def lineups_fit_corr(train_seasons: str = typer.Option("2021-2025", "--train"), 
     c = corr.fit(features.build(d), dst.build(d), tr)
     corr.save(c)
     typer.echo(f"fitted on {c['n_team_games']} team-games → {corr.PATH}")
+
+
+# --- app jobs ---------------------------------------------------------------
+@app_app.command("run-job")
+def app_run_job(job_id: int):
+    """Carry out one job the web app filed in bsb.app_jobs (lineup build or slate import)."""
+    import json
+    import os
+    import tempfile
+    with _db.connect(settings().db_url) as conn:
+        row = conn.execute(
+            """update bsb.app_jobs set status = 'running', started_at = now()
+               where id = %s and status in ('queued', 'dispatched', 'needs_setup') returning kind, payload""",
+            (job_id,),
+        ).fetchone()
+        conn.commit()
+        if not row:
+            typer.echo(f"job {job_id}: not found or already handled")
+            return
+        kind, payload = row
+        try:
+            if kind == "build_lineups":
+                from optimizer.jobs import build_lineups
+                result = build_lineups(conn, job_id, payload)
+            elif kind == "import_slate":
+                from .draftkings import import_csv
+                text = payload.get("csv") or ""
+                if not text.startswith("Position,") or len(text) > 400_000:
+                    raise ValueError("that does not look like a DraftKings salary export")
+                name = "".join(c for c in (payload.get("name") or "app-upload") if c.isalnum() or c in "-_ ")[:60] or "app-upload"
+                with tempfile.TemporaryDirectory() as d:
+                    f = Path(d) / f"{name}.csv"
+                    f.write_text(text, encoding="utf-8")
+                    n = import_csv(conn, f, slate_name=name)
+                result = {"rows": n, "name": name}
+            else:
+                raise ValueError(f"job kind {kind!r} is run by its own workflow")
+            conn.execute(
+                "update bsb.app_jobs set status = 'done', finished_at = now(), result = %s::jsonb, payload = payload - 'csv' where id = %s",
+                (json.dumps(result), job_id),
+            )
+            conn.commit()
+            typer.echo(f"job {job_id} ({kind}) done: {json.dumps(result)[:400]}")
+        except Exception as e:  # noqa: BLE001 — the app shows the reason
+            conn.rollback()
+            conn.execute(
+                "update bsb.app_jobs set status = 'failed', finished_at = now(), error = %s, payload = payload - 'csv' where id = %s",
+                (str(e)[:1500], job_id),
+            )
+            conn.commit()
+            typer.echo(f"job {job_id} ({kind}) failed: {e}", err=True)
+            raise typer.Exit(1) from e
+    if kind == "import_slate" and os.getenv("GITHUB_OUTPUT"):   # a new slate needs projections → lineups
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write("needs_projection=true\n")
+
+
+@app_app.command("finish-job")
+def app_finish_job(job_id: int, ok: bool = typer.Option(True, "--ok/--failed")):
+    """Mark a job that ran as a whole workflow (refresh, re-project) as finished."""
+    with _db.connect(settings().db_url) as conn:
+        conn.execute(
+            """update bsb.app_jobs set status = %s, finished_at = now(), started_at = coalesce(started_at, created_at),
+                      error = case when %s then null else 'the workflow failed — see the Actions tab' end
+               where id = %s and status not in ('done', 'failed')""",
+            ("done" if ok else "failed", ok, job_id),
+        )
+        conn.commit()
 
 
 if __name__ == "__main__":

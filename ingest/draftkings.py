@@ -140,6 +140,18 @@ def import_csv(
                  and p.latest_team = s.team and s.position <> 'DST'""",
             (slate_id, sport),
         )
+        # Second pass for players nflverse still lists on their old team (recent trades
+        # and signings): same name and position, and exactly one such player in the league.
+        conn.execute(
+            f"""update bsb.dfs_salaries s set player_id = m.player_id
+               from (select {_NAME_KEY.format(col="p.display_name")} as key, p.position, min(p.player_id) as player_id
+                     from bsb.players p
+                     where p.sport = %s and p.status in ('ACT', 'RES', 'DEV', 'INA', 'RSR', 'RSN')
+                     group by 1, 2 having count(*) = 1) m
+               where s.slate_id = %s and s.player_id is null and s.position <> 'DST'
+                 and m.key = {_NAME_KEY.format(col="s.player_name")} and m.position = s.position""",
+            (sport, slate_id),
+        )
         # DSTs get the synthetic id the projection model writes (DST_<team>)
         conn.execute(
             "update bsb.dfs_salaries set player_id = 'DST_' || team where slate_id = %s and position = 'DST'",

@@ -1,0 +1,26 @@
+name: Feed health
+
+# Fails — and so emails the repo owner — when a feed has gone quiet: stats,
+# injury statuses, odds or projections older than they should be in-season.
+# The app shows the same table on its home screen.
+on:
+  schedule:
+    - cron: "47 12 * 9-12,1,2 *"   # 07:47 ET daily, September to February
+  workflow_dispatch:
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - run: bsb db migrate
+      - run: bsb db health --strict

@@ -42,15 +42,47 @@ def connect(db_url: str) -> Iterator[psycopg.Connection]:
         yield conn
 
 
-def migrate(db_url: str) -> None:
-    """Apply every *.sql in supabase/migrations in filename order. Idempotent —
-    the migrations use IF NOT EXISTS throughout."""
+def migrate(db_url: str) -> list[str]:
+    """Apply the supabase/migrations/*.sql files that have not been applied yet,
+    in filename order, and record each in bsb.schema_migrations. → names applied.
+
+    (Until 0006 every file was re-run on every deploy. That was survivable while
+    they were all idempotent, but 0001 re-granted read access to `anon` each
+    time, which would have silently undone the access lock-down.)"""
     files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    applied: list[str] = []
     with connect(db_url) as conn:
+        conn.execute("create schema if not exists bsb")
+        conn.execute(
+            """create table if not exists bsb.schema_migrations (
+                   filename text primary key, applied_at timestamptz not null default now())"""
+        )
+        conn.commit()
+        done = {r[0] for r in conn.execute("select filename from bsb.schema_migrations").fetchall()}
         for f in files:
+            if f.name in done:
+                continue
             log.info("applying %s", f.name)
             conn.execute(f.read_text())
-        conn.commit()
+            conn.execute("insert into bsb.schema_migrations (filename) values (%s) on conflict do nothing", (f.name,))
+            conn.commit()
+            applied.append(f.name)
+    return applied
+
+
+def recent_ok(conn: psycopg.Connection, job: str, minutes: int) -> bool:
+    """Has `job` already succeeded (and written rows) in the last `minutes`?
+    Lets two schedulers overlap without doing the work — or spending the API
+    quota — twice."""
+    if minutes <= 0:
+        return False
+    row = conn.execute(
+        """select 1 from bsb.ingest_runs
+           where job = %s and ok and coalesce(rows_written, 0) > 0
+             and finished_at > now() - make_interval(mins => %s) limit 1""",
+        (job, minutes),
+    ).fetchone()
+    return row is not None
 
 
 def _py(v: Any) -> Any:

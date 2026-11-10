@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 200 200" width="200" height="200">
+<defs><clipPath id="disc"><circle cx="100" cy="100" r="88"></circle></clipPath><clipPath id="figbox"><rect x="28" y="52" width="144" height="105"></rect></clipPath>
+<mask id="fig" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200"><image xlink:href="_figure-mask.png" href="_figure-mask.png" x="12.16" y="34.68" width="184.3" height="183.8"></image></mask></defs>
+<circle cx="100" cy="100" r="96" fill="#C4F13A"></circle><circle cx="100" cy="100" r="88" fill="#050F1C"></circle>
+<g clip-path="url(#disc)">
+<path d="M14 150 C14 60 70 8 126 20 C170 30 192 66 176 96" stroke="#C4F13A" stroke-width="18" fill="none" stroke-linecap="round"></path>
+<path d="M26 150 C26 72 74 26 124 36" stroke="#050F1C" stroke-width="3" fill="none" stroke-linecap="round"></path>
+<circle cx="176" cy="96" r="13" fill="#C4F13A"></circle><circle cx="164" cy="110" r="9" fill="#C4F13A"></circle><circle cx="154" cy="122" r="6" fill="#C4F13A"></circle><circle cx="147" cy="131" r="3.5" fill="#C4F13A"></circle>
+<g clip-path="url(#figbox)"><rect x="0" y="0" width="200" height="200" fill="#C4F13A" mask="url(#fig)"></rect></g>
+<path d="M0 158 Q20 146 40 158 T80 158 T120 158 T160 158 T200 158 L200 200 L0 200 Z" fill="#C4F13A"></path>
+<path d="M0 172 Q20 162 40 172 T80 172 T120 172 T160 172 T200 172" stroke="#050F1C" stroke-width="3" fill="none"></path>
+</g></svg>

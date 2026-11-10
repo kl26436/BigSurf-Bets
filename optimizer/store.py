@@ -38,16 +38,20 @@ def save_local(pf: Portfolio, label: str, out_dir: Path | None = None) -> tuple[
     return upload, detail
 
 
-def write_db(conn, pf: Portfolio, slate_id: int, run_id: int | None) -> int:
+def write_db(
+    conn, pf: Portfolio, slate_id: int, run_id: int | None, source: str = "auto",
+    job_id: int | None = None, label: str | None = None,
+) -> int:
     from ingest.db import RunLogger, insert_df
 
     with RunLogger(conn, "optimizer.lineups") as run:
         s = asdict(pf.settings)
         s["rules"] = {k: (sorted(v) if isinstance(v, set) else v) for k, v in asdict(pf.settings.resolved_rules()).items()}
         set_id = conn.execute(
-            """insert into bsb.lineup_sets (slate_id, run_id, mode, n_lineups, settings, summary)
-               values (%s, %s, %s, %s, %s::jsonb, %s::jsonb) returning id""",
-            (slate_id, run_id, pf.settings.mode, len(pf.lineups), json.dumps(s), json.dumps({**set_summary(pf), "notes": pf.notes})),
+            """insert into bsb.lineup_sets (slate_id, run_id, mode, n_lineups, settings, summary, source, job_id, label)
+               values (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s) returning id""",
+            (slate_id, run_id, pf.settings.mode, len(pf.lineups), json.dumps(s),
+             json.dumps({**set_summary(pf), "notes": pf.notes}), source, job_id, label),
         ).fetchone()[0]
         lineups = pf.summary().rename({"lineup": "lineup_no"}).with_columns(pl.lit(set_id).alias("set_id"))
         players = pf.rows().rename(

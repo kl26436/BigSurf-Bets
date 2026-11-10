@@ -1,8 +1,9 @@
 name: Projections
 
-# Re-project the upcoming week after every successful ingest, so projections
-# always reflect the newest stats, injury report and Sleeper statuses:
-#   Tue (post-MNF stats) · Fri (final injury report) · Sun 10:00 + 11:30 ET (inactives)
+# Re-project the week in play whenever something it depends on changed: new
+# stats, a new injury status, a fresher salary export, new odds. Triggered by
+# every ingest and slate import; a run whose inputs are identical to the last
+# one's exits in seconds (--if-stale), so frequent status snapshots are cheap.
 on:
   workflow_run:
     workflows: ["Weekly ingest", "DK slate import"]
@@ -13,12 +14,15 @@ on:
         description: "Season (blank = current)"
         required: false
       week:
-        description: "Week (blank = next unplayed)"
+        description: "Week (blank = the week in play)"
+        required: false
+      app_job_id:
+        description: "bsb.app_jobs id to mark finished (set by the app)"
         required: false
 
 concurrency:
   group: projections
-  cancel-in-progress: true   # a newer ingest supersedes an in-flight projection
+  cancel-in-progress: false   # never kill a run that is minutes from finishing on a Sunday morning
 
 env:
   SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
@@ -54,14 +58,26 @@ jobs:
         env:
           SEASON: ${{ inputs.season }}
           WEEK: ${{ inputs.week }}
+          EVENT: ${{ github.event_name }}
         run: |
           args=()
           if [[ -n "$SEASON" ]]; then args+=(--season "$SEASON"); fi
           if [[ -n "$WEEK" ]]; then args+=(--week "$WEEK"); fi
+          if [[ "$EVENT" == "workflow_run" ]]; then args+=(--if-stale); fi
           bsb model project "${args[@]}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: projections
           path: data/projections/*.csv
+          if-no-files-found: ignore
           retention-days: 30
+
+      - name: Tell the app
+        if: always() && inputs.app_job_id != ''
+        env:
+          APP_JOB_ID: ${{ inputs.app_job_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          [[ "$APP_JOB_ID" =~ ^[0-9]+$ ]] || exit 0
+          if [[ "$OUTCOME" == "success" ]]; then bsb app finish-job "$APP_JOB_ID" --ok; else bsb app finish-job "$APP_JOB_ID" --failed; fi

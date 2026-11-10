@@ -1,0 +1,185 @@
+// Sample data for running the app without a database (no .env.local). Every
+// number here is invented; the app labels the whole session "Sample data".
+import { SLOTS } from "./lineup";
+import {
+  DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  type LineupSet, type PoolPlayer, type Pos, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
+} from "./types";
+
+let seed = 7;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const day = (d: number, h: number) => {
+  const t = new Date();
+  t.setDate(t.getDate() + ((7 - t.getDay()) % 7 || 7) + d);
+  t.setHours(h, d === 0 && h === 15 ? 25 : 0, 0, 0);
+  return t.toISOString();
+};
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3600e3).toISOString();
+
+const MATCHUPS: [string, string, number, number, number][] = [
+  ["DET", "NE", 2.5, 51.5, 12], ["ATL", "KC", -3.5, 45.5, 12], ["NYJ", "BUF", -8.5, 50.5, 12], ["NO", "CAR", 1.5, 48.5, 12],
+  ["ARI", "LA", -9.5, 40.5, 15], ["DAL", "SF", -4.5, 55.5, 15],
+];
+const FIRST = ["Jalen", "Marcus", "Tyler", "Devon", "Chris", "Andre", "Malik", "Josh", "Darius", "Evan", "Noah", "Trey", "Isaiah", "Cole", "Micah", "Reggie"];
+const LAST = ["Carter", "Hayes", "Brooks", "Nolan", "Pierce", "Sutton", "Vance", "Whitaker", "Ellis", "Monroe", "Graves", "Holt", "Barrett", "Quinn", "Maddox", "Reyes"];
+
+export const games: Game[] = MATCHUPS.map(([home, away, spread, total, hour]) => ({
+  game_id: `demo_${away}_${home}`, season: 2026, week: 10, kickoff_at: day(0, hour), home_team: home, away_team: away,
+  home_score: null, away_score: null, spread_line: spread, total_line: total,
+  home_implied: (total + spread) / 2, away_implied: (total - spread) / 2,
+}));
+
+export const slates: Slate[] = [{
+  id: 1, slate_name: "sample", slate_type: "classic", season: 2026, week: 10, starts_at: day(0, 12), salary_cap: 50000,
+  imported_at: hoursAgo(20), upcoming: true, n_players: 0, n_games: games.length,
+}];
+
+const DEPTH: [Pos, number[]][] = [["QB", [19.5, 3]], ["RB", [15.5, 9.5, 4.5]], ["WR", [16, 12, 8.5, 5]], ["TE", [10, 4.5]], ["DST", [7]]];
+export const pool: PoolPlayer[] = [];
+let id = 40000;
+for (const g of games) {
+  for (const [team, opp, implied, spread] of [
+    [g.home_team, g.away_team, g.home_implied!, -g.spread_line!], [g.away_team, g.home_team, g.away_implied!, g.spread_line!]] as [string, string, number, number][]) {
+    for (const [pos, means] of DEPTH) {
+      means.forEach((base, k) => {
+        id += 1;
+        const mean = Math.max(1.5, base * (implied / 23.5) * (0.85 + rnd() * 0.3));
+        const salary = pos === "DST" ? 2400 + Math.round(rnd() * 14) * 100 : Math.max(3000, Math.round((mean * 330 + rnd() * 900 + (pos === "QB" ? 400 : 0)) / 100) * 100);
+        const q = k === 0 && rnd() < 0.18;
+        pool.push({
+          slate_id: 1, dk_id: String(id), player_id: pos === "DST" ? `DST_${team}` : `demo-${id}`,
+          name: pos === "DST" ? `${team} defense` : `${FIRST[id % 16]} ${LAST[(id * 7) % 16]}`, pos, team, opponent: opp,
+          game_id: g.game_id, kickoff_at: g.kickoff_at, salary, avg_points: Math.round(mean * (0.8 + rnd() * 0.4) * 10) / 10,
+          dk_status: q ? "Q" : null, headshot_url: null, injury_status: q ? "Questionable" : null,
+          model_dk_mean: mean, override_dk_mean: null, override_note: null, dk_mean: mean,
+          dk_p10: mean * 0.32, dk_p25: mean * 0.58, dk_p50: mean * 0.93, dk_p75: mean * 1.32, dk_p90: mean * 1.8,
+          ppr_mean: mean * 0.95, anytime_td_prob: pos === "QB" || pos === "DST" ? 0.08 : Math.min(0.62, mean / 34),
+          implied_total: implied, team_spread: spread, total_line: g.total_line, projected_at: hoursAgo(2),
+          attempts: pos === "QB" ? 33 : 0, passing_yards: pos === "QB" ? mean * 12.5 : 0, passing_tds: pos === "QB" ? mean / 11 : 0,
+          carries: pos === "RB" ? mean * 1.05 : pos === "QB" ? 3.5 : 0.2, rushing_yards: pos === "RB" ? mean * 4.4 : pos === "QB" ? 15 : 1,
+          targets: pos === "QB" || pos === "DST" ? 0 : mean * (pos === "RB" ? 0.28 : 0.55), receptions: pos === "QB" || pos === "DST" ? 0 : mean * (pos === "RB" ? 0.21 : 0.36),
+          receiving_yards: pos === "QB" || pos === "DST" ? 0 : mean * (pos === "RB" ? 1.6 : 4.4),
+        } as PoolPlayer);
+      });
+    }
+  }
+}
+slates[0].n_players = pool.length;
+
+export const whoami = { signed_in: true, member: true, role: "owner", claim_open: false };
+export const health: FeedHealth[] = [
+  ["nflverse.player_stats", "Game stats", 26, 100, "ok"], ["nflverse.injuries", "Injury reports", 26, 100, "ok"],
+  ["sleeper.status", "Player statuses", 2.1, 40, "ok"], ["odds.oddslink", "Game lines", 91, 80, "stale"],
+  ["odds.oddspapi", "Props and sharp lines", 20, 80, "ok"], ["model.project", "Projections", 2, 40, "ok"],
+  ["optimizer.lineups", "Lineups", 1.9, 100, "ok"],
+].map(([job, label, age, max, state], i) => ({
+  job, label, sort: i, last_ok_at: hoursAgo(age as number), last_rows: 400, age_hours: age, max_age_hours: max, state, last_error: null,
+})) as FeedHealth[];
+
+function buildLineup(k: number): PoolPlayer[] {
+  const by = (pos: Pos) => pool.filter((p) => p.pos === pos).sort((a, b) => (b.dk_mean! / b.salary) - (a.dk_mean! / a.salary));
+  const pick = (pos: Pos, i: number) => by(pos)[(i + k * 2) % Math.min(by(pos).length, 9)];
+  const qb = pick("QB", 0);
+  const l = [qb, pick("RB", 0), pick("RB", 1), pick("WR", 0), pick("WR", 1), pick("WR", 2), pick("TE", 0), pick("RB", 2), pick("DST", 0)];
+  return l;
+}
+const setPlayers = (setId: number, n: number): LineupPlayer[] =>
+  Array.from({ length: n }, (_, k) => buildLineup(k + setId).map((p, i) => ({
+    set_id: setId, lineup_no: k + 1, slot_no: i, slot: SLOTS[i], dk_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos,
+    team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status,
+  }))).flat();
+
+export const sets: LineupSet[] = [
+  { id: 3, created_at: hoursAgo(1.9), slate_id: 1, run_id: 9, mode: "gpp", source: "auto", entered: false, label: null, job_id: null, n_lineups: 20,
+    settings: { max_exposure: 0.5, min_unique: 3 }, summary: { players_used: 39, max_exposure_pct: 50, avg_proj: 132.9, set_best_mean: 171, set_best_p90: 198 }, on_latest_projections: true },
+  { id: 2, created_at: hoursAgo(1.9), slate_id: 1, run_id: 9, mode: "cash", source: "auto", entered: false, label: null, job_id: null, n_lineups: 3,
+    settings: { max_exposure: 0.67, min_unique: 3 }, summary: { players_used: 16, max_exposure_pct: 67, avg_proj: 135.7 }, on_latest_projections: true },
+  { id: 1, created_at: hoursAgo(30), slate_id: 1, run_id: 7, mode: "gpp", source: "user", entered: true, label: "Tuesday build", job_id: 1, n_lineups: 10,
+    settings: { max_exposure: 0.4, min_unique: 3 }, summary: { players_used: 31, max_exposure_pct: 40, avg_proj: 131.2 }, on_latest_projections: false },
+];
+export function setDetail(setId: number): { lineups: LineupRow[]; players: LineupPlayer[] } {
+  const s = sets.find((x) => x.id === setId) ?? sets[0];
+  const players = setPlayers(s.id, s.n_lineups);
+  const lineups = Array.from({ length: s.n_lineups }, (_, k) => {
+    const mine = players.filter((p) => p.lineup_no === k + 1);
+    const proj = mine.reduce((a, p) => a + (p.dk_mean ?? 0), 0);
+    return { set_id: s.id, lineup_no: k + 1, salary: mine.reduce((a, p) => a + p.salary, 0), proj, sim_mean: proj * 0.99,
+      p10: proj * 0.78, p50: proj * 0.98, p90: proj * 1.24, p99: proj * 1.45, best_of_set_pct: 100 / s.n_lineups, actual_points: null };
+  });
+  return { lineups, players };
+}
+export function setEntered(setId: number, entered: boolean) {
+  const s = sets.find((x) => x.id === setId);
+  if (s) s.entered = entered;
+  return Promise.resolve();
+}
+
+const q = (g: Game, market: LineQuote["market"], outcome: LineQuote["outcome"], number: number, line: number | null, book: string, american: number, fair: number, best: boolean, arb: number): LineQuote => {
+  const d = american > 0 ? 1 + american / 100 : 1 + 100 / -american;
+  return { captured_at: hoursAgo(3), game_id: g.game_id, home_team: g.home_team, away_team: g.away_team, kickoff_at: g.kickoff_at, market, number,
+    outcome, line, bookmaker: book, price_american: american, price_decimal: d, fair_prob: fair, ev: fair * d - 1, is_best: best, arb_pct: arb };
+};
+export const quotes: LineQuote[] = [
+  q(games[0], "moneyline", "away", 0, null, "betmgm", 135, 0.445, true, 0.012), q(games[0], "moneyline", "home", 0, null, "circa", -128, 0.555, true, 0.012),
+  q(games[0], "moneyline", "away", 0, null, "draftkings", 124, 0.445, false, 0.012), q(games[0], "moneyline", "home", 0, null, "pinnacle", -134, 0.555, false, 0.012),
+  q(games[5], "total", "over", 55.5, 55.5, "circa", -102, 0.512, true, -0.01), q(games[5], "total", "under", 55.5, 55.5, "betmgm", -110, 0.488, true, -0.01),
+  q(games[2], "spread", "home", -8.5, -8.5, "caesars", 100, 0.509, true, -0.016), q(games[2], "spread", "away", -8.5, 8.5, "fanduel", -112, 0.491, true, -0.016),
+  q(games[3], "spread", "away", 1.5, -1.5, "draftkings", -105, 0.5, true, -0.03),
+];
+const starters = pool.filter((p) => p.pos !== "DST" && (p.dk_mean ?? 0) > 11);
+export const props: PropEdge[] = starters.slice(0, 14).map((p, i) => {
+  const stat = p.pos === "QB" ? "passing_yards" : p.pos === "RB" ? "rushing_yards" : i % 2 ? "receptions" : "receiving_yards";
+  const mean = stat === "receptions" ? Number(p.receptions) : stat === "passing_yards" ? Number(p.passing_yards) : stat === "rushing_yards" ? Number(p.rushing_yards) : Number(p.receiving_yards);
+  const fair = 0.44 + rnd() * 0.12, model = Math.min(0.7, Math.max(0.3, fair + (rnd() - 0.5) * 0.14));
+  const over = 1.83 + rnd() * 0.22, under = 1.83 + rnd() * 0.22;
+  return { game_id: p.game_id!, player_id: p.player_id!, player_name: p.name, team: p.team, stat, line: Math.round(mean * 0.96) + 0.5,
+    bookmaker: ["betmgm", "draftkings", "circa"][i % 3], over_decimal: over, under_decimal: under, proj_mean: mean, model_over: model, fair_over: fair,
+    ev_over_fair: fair * over - 1, ev_under_fair: (1 - fair) * under - 1, ev_over_model: model * over - 1, ev_under_model: (1 - model) * under - 1, captured_at: hoursAgo(3) };
+});
+
+export const scorecards: Scorecard[] = [{ season: 2026, week: 9, created_at: hoursAgo(8), metrics: {
+  projections: { n_played: 212, did_not_play: 9, by_position: {
+    QB: { n: 26, mae: 6.1, bias: 0.4, rank_corr: 0.47, cover_p10_p90: 0.81, vs_dk_avg: { n: 26, mae_model: 6.1, mae_dk_avg: 6.9 } },
+    RB: { n: 52, mae: 5.9, bias: -0.3, rank_corr: 0.55, cover_p10_p90: 0.79 }, WR: { n: 84, mae: 5.6, bias: 0.2, rank_corr: 0.53, cover_p10_p90: 0.83 },
+    TE: { n: 30, mae: 5.2, bias: 0.6, rank_corr: 0.33, cover_p10_p90: 0.77 }, DST: { n: 20, mae: 3.9, bias: -0.2, rank_corr: 0.28, cover_p10_p90: 0.8 },
+    ALL: { n: 212, mae: 5.6, bias: 0.1, rank_corr: 0.58, cover_p10_p90: 0.81, vs_dk_avg: { n: 190, mae_model: 5.6, mae_dk_avg: 6.0 } } } },
+  lineups: [{ set_id: 1, mode: "gpp", n: 20, n_complete: 20, avg_actual: 128.4, best_actual: 171.2, avg_projected: 131.0, in_p10_p90: 0.8 }],
+  props: { n: 240, vs_pinnacle: { n: 96, logloss_model: 0.6921, logloss_pinnacle: 0.6874 }, model_edges: { n: 31, wins: 15, units: -1.4, roi: -0.045 } },
+} }];
+
+const mine = pool.filter((p, i) => p.pos !== "DST" && i % 9 === 0).slice(0, 12);
+const asRoster = (p: PoolPlayer, starter: boolean): RosterPlayer => ({
+  sleeper_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos, team: p.team, is_starter: starter, opponent: p.opponent,
+  kickoff_at: p.kickoff_at, ppr_mean: p.ppr_mean, ppr_p10: (p.ppr_mean ?? 0) * 0.35, ppr_p90: (p.ppr_mean ?? 0) * 1.8, injury_status: p.injury_status });
+export const roster: RosterPlayer[] = mine.map((p, i) => asRoster(p, i < 8));
+export const freeAgents: RosterPlayer[] = pool.filter((p, i) => p.pos !== "DST" && i % 9 === 4).slice(0, 14).map((p) => asRoster(p, false))
+  .sort((a, b) => (b.ppr_mean ?? 0) - (a.ppr_mean ?? 0));
+
+let jobList: Job[] = [{ id: 1, created_at: hoursAgo(30), kind: "build_lineups", payload: { n: 10 }, status: "done", started_at: hoursAgo(30),
+  finished_at: hoursAgo(29.9), result: { set_id: 1, n_lineups: 10 }, error: null }];
+export const jobs = () => Promise.resolve(jobList);
+export function addJob(kind: string, payload: Record<string, unknown>) {
+  const job: Job = { id: jobList.length + 1, created_at: new Date().toISOString(), kind, payload, status: "needs_setup", started_at: null, finished_at: null,
+    result: null, error: "Sample data: nothing is connected, so nothing was started." };
+  jobList = [job, ...jobList];
+  return Promise.resolve(job.id);
+}
+export function setOverride(playerId: string, mean: number | null) {
+  const p = pool.find((x) => x.player_id === playerId);
+  if (p) { p.override_dk_mean = mean; p.dk_mean = mean ?? p.model_dk_mean; }
+  return Promise.resolve();
+}
+export const log = (playerId: string) => {
+  const p = pool.find((x) => x.player_id === playerId);
+  return Promise.resolve(Array.from({ length: 6 }, (_, i) => ({ season: 2026, week: 9 - i, opponent: ["GB", "MIN", "CHI", "TB", "PHI", "SEA"][i],
+    fantasy_points_dk: Math.round((p?.dk_mean ?? 8) * (0.5 + rnd()) * 10) / 10, targets: Math.round(4 + rnd() * 6), receptions: Math.round(2 + rnd() * 5),
+    receiving_yards: Math.round(20 + rnd() * 80), carries: p?.pos === "RB" ? Math.round(8 + rnd() * 12) : 0, rushing_yards: p?.pos === "RB" ? Math.round(30 + rnd() * 70) : 0,
+    passing_yards: p?.pos === "QB" ? Math.round(180 + rnd() * 130) : 0 })));
+};
+export const loadSettings = (): Partial<Settings> => {
+  try { return JSON.parse(localStorage.getItem("bsb-demo-settings") ?? "{}"); } catch { return {}; }
+};
+export const saveSettings = (s: Settings) => {
+  try { localStorage.setItem("bsb-demo-settings", JSON.stringify({ ...DEFAULT_SETTINGS, ...s })); } catch { /* private window */ }
+  return Promise.resolve();
+};

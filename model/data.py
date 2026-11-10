@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -109,13 +110,26 @@ def latest_completed_week(schedules: pl.DataFrame, season: int) -> int:
     return int(done["week"].max()) if done.height else 0
 
 
-def next_week(schedules: pl.DataFrame, season: int) -> int | None:
-    """First week of `season` where no game has been played yet."""
-    by_week = (
-        schedules.filter(pl.col("season") == season)
-        .group_by("week")
-        .agg(pl.col("home_score").is_not_null().sum().alias("played"))
-        .filter(pl.col("played") == 0)
-        .sort("week")
-    )
-    return int(by_week["week"][0]) if by_week.height else None
+def _open_games(schedules: pl.DataFrame, season: int, today: date | None = None) -> pl.DataFrame:
+    """Games of `season` still to be played: no final score, and not dated before
+    today (US Eastern). The date test keeps a game whose score nflverse has not
+    posted yet (Tuesday morning after Monday night) from holding the week open."""
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    return schedules.filter(pl.col("season") == season).with_columns(
+        pl.col("gameday").cast(pl.Utf8).str.to_date("%Y-%m-%d", strict=False).alias("_day")
+    ).filter(pl.col("home_score").is_null() & (pl.col("_day") >= today))
+
+
+def next_week(schedules: pl.DataFrame, season: int, today: date | None = None) -> int | None:
+    """The week to project: the earliest week of `season` that still has a game
+    to play. It stays on the current week from Thursday night through Monday
+    night — the Sunday-morning run must re-project *this* week with the final
+    injury news, not jump to the next one because Thursday's game is over."""
+    g = _open_games(schedules, season, today)
+    return int(g["week"].min()) if g.height else None
+
+
+def open_teams(schedules: pl.DataFrame, season: int, week: int, today: date | None = None) -> set[str]:
+    """Teams whose game in (season, week) has not been played yet."""
+    g = _open_games(schedules, season, today).filter(pl.col("week") == week)
+    return set(g["home_team"].to_list()) | set(g["away_team"].to_list())

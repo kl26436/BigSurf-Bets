@@ -166,10 +166,14 @@ def _played_rows(data: NFLData, ref: pl.DataFrame) -> pl.DataFrame:
 
 
 def _upcoming_rows(
-    played: pl.DataFrame, ref: pl.DataFrame, data: NFLData, season: int, week: int, out_ids: set[str]
+    played: pl.DataFrame, ref: pl.DataFrame, data: NFLData, season: int, week: int, out_ids: set[str],
+    force_ids: set[str] | None = None,
 ) -> pl.DataFrame:
     """Stat-less rows for the players expected to suit up in (season, week):
-    on an active roster, appeared recently, and not ruled out."""
+    on an active roster, appeared recently, and not ruled out. `force_ids` are
+    players a sportsbook/DFS site lists as available this week: they are kept
+    even after a long layoff (anyone who has played this season), so a star
+    returning from six weeks out is projected instead of silently missing."""
     teams = (
         _team_schedule(data.schedules).filter((pl.col("season") == season) & (pl.col("week") == week))["team"].to_list()
     )
@@ -177,6 +181,8 @@ def _upcoming_rows(
     recent = (pl.col("season") == season) & (pl.col("week") >= week - 5)
     if week <= 4:  # early season: last year's players are the candidate pool
         recent = recent | (pl.col("season") == season - 1)
+    if force_ids:
+        recent = recent | ((pl.col("season") == season) & pl.col("player_id").is_in(list(force_ids)))
     inj = data.injuries.filter(
         (pl.col("season") == season) & (pl.col("week") == week)
         & pl.col("report_status").is_in(["Out", "Doubtful"])
@@ -291,7 +297,10 @@ def _vacated(df: pl.DataFrame) -> pl.DataFrame:
 # main entry
 # ---------------------------------------------------------------------------
 
-def build(data: NFLData, upcoming: tuple[int, int] | None = None, out_ids: set[str] | None = None) -> pl.DataFrame:
+def build(
+    data: NFLData, upcoming: tuple[int, int] | None = None, out_ids: set[str] | None = None,
+    force_ids: set[str] | None = None,
+) -> pl.DataFrame:
     """Feature frame for every played player-game, plus stat-less rows for
     `upcoming` = (season, week) when given. `out_ids` are player_ids to treat as
     inactive for the upcoming week (e.g. from Sleeper's day-of statuses)."""
@@ -302,7 +311,7 @@ def build(data: NFLData, upcoming: tuple[int, int] | None = None, out_ids: set[s
         # never let rows from the target week (or later) leak in as "history"
         cutoff = upcoming[0] * 100 + upcoming[1]
         played = played.filter(pl.col("season") * 100 + pl.col("week") < cutoff)
-        fut = _upcoming_rows(played, ref, data, upcoming[0], upcoming[1], out_ids or set())
+        fut = _upcoming_rows(played, ref, data, upcoming[0], upcoming[1], out_ids or set(), force_ids)
         played = pl.concat([played, fut.select(played.columns)], how="vertical_relaxed")
         tsched = tsched.filter(pl.col("played") | (pl.col("t") == cutoff))
     else:
