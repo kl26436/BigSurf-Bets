@@ -18,12 +18,14 @@ sleeper_app = typer.Typer(no_args_is_help=True, help="Sleeper (injury status + l
 odds_app = typer.Typer(no_args_is_help=True, help="Sportsbook odds")
 dk_app = typer.Typer(no_args_is_help=True, help="DraftKings salaries")
 model_app = typer.Typer(no_args_is_help=True, help="Projection model (needs the [model] extra)")
+lineups_app = typer.Typer(no_args_is_help=True, help="DraftKings lineup optimizer (needs the [model] extra)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
 app.add_typer(sleeper_app, name="sleeper")
 app.add_typer(odds_app, name="odds")
 app.add_typer(dk_app, name="dk")
 app.add_typer(model_app, name="model")
+app.add_typer(lineups_app, name="lineups")
 
 log = logging.getLogger("bsb")
 
@@ -279,6 +281,102 @@ def model_price(player: str, stat: str, line: float):
             f"  over  {line}: {r['p_over']:.1%}  fair {r['fair_over']:+d}\n"
             f"  under {line}: {r['p_under']:.1%}  fair {r['fair_under']:+d}"
         )
+
+
+# --- lineups ----------------------------------------------------------------
+
+@lineups_app.command("build")
+def lineups_build(
+    n: int = typer.Option(20, help="number of lineups"),
+    mode: str = typer.Option("gpp", help="gpp (tournaments) or cash (50/50s, head-to-heads)"),
+    max_exposure: float = typer.Option(0.5, help="max share of lineups any one player may appear in"),
+    min_unique: int = typer.Option(3, help="players by which any two lineups must differ"),
+    lock: str = typer.Option(None, help="comma-separated names (or DK ids) that must be in every lineup"),
+    exclude: str = typer.Option(None, help="comma-separated names (or DK ids) to leave out"),
+    slate_id: int = typer.Option(None, help="bsb.dfs_slates id (default: newest upcoming classic slate)"),
+    csv: str = typer.Option(None, help="local mode: a DKSalaries.csv export instead of Supabase"),
+    projections: str = typer.Option(None, help="local mode: projections parquet from `bsb model project`"),
+    write: bool = typer.Option(True, help="save the set to Supabase (ignored in local mode)"),
+    seed: int = typer.Option(7),
+):
+    """Build a set of DK classic lineups from the latest projections."""
+    import polars as pl
+
+    from optimizer import portfolio, slate, store
+    from optimizer.classic import Rules
+
+    if mode not in ("gpp", "cash"):
+        raise typer.BadParameter("mode must be gpp or cash")
+    info: dict = {}
+    if csv:
+        if not projections:
+            raise typer.BadParameter("--csv needs --projections")
+        pool, label = slate.from_files(csv, projections), Path(csv).stem
+    else:
+        with _db.connect(settings().db_url) as conn:
+            slate_id = slate_id or slate.latest_slate_id(conn)
+            if slate_id is None:
+                typer.echo("no upcoming DraftKings classic slate in bsb.dfs_slates — upload a salary export to slates/")
+                raise typer.Exit(0)
+            pool, info = slate.from_db(conn, slate_id)
+        label = f"slate{slate_id}"
+    if pool.is_empty():
+        typer.echo("no projected players on this slate yet — has `bsb model project` run for its week?")
+        raise typer.Exit(0)
+
+    def ids(spec: str | None) -> set[str]:
+        out: set[str] = set()
+        for tok in (t.strip() for t in (spec or "").split(",") if t.strip()):
+            hit = pool.filter((pl.col("dk_id") == tok) | pl.col("name").str.to_lowercase().str.contains(tok.lower(), literal=True))
+            if hit.is_empty():
+                raise typer.BadParameter(f"no player on the slate matches {tok!r}")
+            out |= set(hit["dk_id"].to_list())
+        return out
+
+    st = portfolio.Settings(n=n, mode=mode, max_exposure=max_exposure, min_unique=min_unique, seed=seed)
+    base = st.resolved_rules()
+    st.rules = Rules(**{**base.__dict__, "lock": ids(lock), "exclude": ids(exclude)})
+    pf = portfolio.build(pool, st)
+    if not pf.lineups:
+        typer.echo("no legal lineup could be built: " + "; ".join(pf.notes))
+        raise typer.Exit(1)
+    upload, detail = store.save_local(pf, f"{label}_{mode}")
+    if not csv and write:
+        with _db.connect(settings().db_url) as conn:
+            set_id = store.write_db(conn, pf, info["id"], info.get("run_id"))
+        typer.echo(f"lineup set {set_id} → bsb.lineup_sets / lineups / lineup_players")
+
+    sm = store.set_summary(pf)
+    typer.echo(f"{len(pf.lineups)} {mode} lineups from {pool.height} players · {sm['players_used']} players used · "
+               f"max exposure {sm['max_exposure_pct']:.0f}% · avg projection {sm['avg_proj']}")
+    typer.echo(f"set's best lineup per simulated slate: mean {sm['set_best_mean']}, top-10% {sm['set_best_p90']} "
+               f"(single best lineup averages {sm['best_lineup_mean']})")
+    for note in pf.notes:
+        typer.echo(f"note: {note}")
+    rows, summ = pf.rows(), {r["lineup"]: r for r in pf.summary().iter_rows(named=True)}
+    for k in range(1, min(len(pf.lineups), 3) + 1):
+        x = summ[k]
+        typer.echo(f"\n#{k}  ${x['salary']:,}  proj {x['proj']}  range {x['p10']}–{x['p90']}")
+        for r in rows.filter(pl.col("lineup") == k).iter_rows(named=True):
+            flag = f" [{r['status']}]" if r["status"] else ""
+            typer.echo(f"  {r['slot']:4s} {r['name']:24s} {r['team']:3s} v {r['opponent']:3s} ${r['salary']:>5,} {r['dk_mean']:5.1f}{flag}")
+    typer.echo("\nexposure:")
+    for r in pf.exposure().head(12).iter_rows(named=True):
+        typer.echo(f"  {r['exposure_pct']:3.0f}%  {r['name']:24s} {r['pos']:3s} {r['team']:3s} ${r['salary']:>5,}")
+    typer.echo(f"\nDK upload file: {upload}\ndetail: {detail}")
+
+
+@lineups_app.command("fit-corr")
+def lineups_fit_corr(train_seasons: str = typer.Option("2021-2025", "--train"), offline: bool = typer.Option(False)):
+    """Re-estimate the role correlation matrix (optimizer/role_corr.json)."""
+    from model import data, dst, features
+    from optimizer import corr
+
+    tr = _seasons(train_seasons)
+    d = data.load(min(tr), max(tr), offline=offline)
+    c = corr.fit(features.build(d), dst.build(d), tr)
+    corr.save(c)
+    typer.echo(f"fitted on {c['n_team_games']} team-games → {corr.PATH}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,51 @@
+name: Lineups
+
+# Rebuild lineup sets whenever projections change (new stats, injury news, a
+# fresher salary export): Weekly ingest / DK slate import → Projections → Lineups.
+on:
+  workflow_run:
+    workflows: ["Projections"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Tournament lineups to build"
+        default: "20"
+      max_exposure:
+        description: "Max share of lineups per player (0-1)"
+        default: "0.5"
+
+concurrency:
+  group: lineups
+  cancel-in-progress: true
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[model]"
+      - name: Apply migrations
+        run: bsb db migrate
+      - name: Build lineup sets
+        env:
+          N: ${{ inputs.n || '20' }}
+          MAX_EXPOSURE: ${{ inputs.max_exposure || '0.5' }}
+        run: |
+          bsb lineups build --mode gpp --n "$N" --max-exposure "$MAX_EXPOSURE"
+          bsb lineups build --mode cash --n 3 --max-exposure 0.67
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lineups
+          path: data/lineups/*.csv
+          if-no-files-found: ignore
+          retention-days: 30

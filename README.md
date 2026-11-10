@@ -95,6 +95,34 @@ Known gaps: no kickers; rookies with no NFL game are not projected; weather is
 not a feature; red-zone/route data (needs play-by-play) not used; the benchmark against
 real sportsbook prop lines waits on `odds_snapshots` history.
 
+## Lineup optimizer (`optimizer/`)
+
+```bash
+bsb lineups build --mode gpp --n 20              # tournament set from the newest upcoming slate in Supabase
+bsb lineups build --mode cash --n 3 --max-exposure 0.67
+bsb lineups build --lock "josh allen" --exclude "worthy,44851168"
+bsb lineups build --csv slates/2026-w10-main.csv --projections data/projections/projections_2026_w10.parquet  # local, no DB
+```
+
+- **Solver** (`classic.py`): exact mixed-integer optimisation (HiGHS via scipy) of DK classic —
+  $50k cap, QB / 2 RB / 3 WR / TE / FLEX / DST, players from ≥ 2 games — plus optional strategy
+  rules: QB stack, bring-back, no offense against your own DST, max per team, lock / exclude.
+- **Simulation** (`sim.py`, `corr.py`): 10,000 correlated versions of the slate. Each player is drawn
+  from his projected distribution; draws are tied together by role correlations estimated from
+  2021–2025 (QB↔WR1 +0.34, QB↔opposing DST −0.30, …). Every lineup gets a score *distribution*.
+  Checked on 2026 weeks 1–9: the simulated 80% range covered 79–80% of actual lineup totals; with
+  correlations switched off, stacked lineups' ranges were too narrow (76%).
+- **Portfolio** (`portfolio.py`): N lineups with an exposure cap (default: no player in more than
+  50%) and a minimum number of different players between any two (default 3). `cash` maximises
+  expected score; `gpp` stacks the QB with a pass catcher, optimises against simulated outcomes and
+  adds each lineup for what it contributes to the set's best score.
+- Output: a DraftKings bulk-upload CSV + a readable detail CSV in `data/lineups/`, and
+  `bsb.lineup_sets` / `lineups` / `lineup_players` in Supabase. The `Lineups` workflow rebuilds both
+  sets after every projections run.
+
+Not modelled yet: field ownership (so no leverage), showdown slates, late swap, and — because there
+is no archive of past DK salaries — no historical ROI backtest of the lineups themselves.
+
 ## Secrets
 
 GitHub → Settings → Secrets and variables → Actions:
@@ -138,6 +166,8 @@ Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow)
 ```
 ingest/          Python package (bsb CLI)
 model/           projection model: features, training, distributions, backtest, projection
+optimizer/       lineup engine: slate pool, correlated simulation, solver, portfolios
+slates/          DraftKings salary exports (uploading one triggers import → projections → lineups)
 docs/model/      backtest reports
 supabase/        SQL migrations
 scripts/         one-off probes
@@ -148,8 +178,8 @@ tests/
 ## Roadmap
 
 1. Data ✓
-2. **Projections** ← you are here: player-week model, DK/PPR outputs, prop probabilities
-3. Engines: DK classic + showdown optimizer with exposure limits; Sleeper start/sit + waivers; Underdog vs Pinnacle edge finder
+2. Projections ✓: player-week + DST models, DK/PPR outputs, prop probabilities
+3. **Engines** ← you are here: DK classic optimizer ✓ (showdown next); Sleeper start/sit + waivers; Underdog vs Pinnacle edge finder
 4. PWA (Firebase Hosting, Supabase reads, web push) at bigsurf.bet
 5. Agents (Claude) to argue through picks
 6. More sports; Kalshi (the one venue with an official, sanctioned API)
