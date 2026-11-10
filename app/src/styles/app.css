@@ -170,7 +170,9 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
 .scroll-x { overflow-x: auto; }
 .empty { padding: var(--space-8) var(--space-4); text-align: center; }
 .empty p + p { margin-top: var(--space-2); }
-.sticky-cta { position: sticky; bottom: var(--space-layout-navClearance); z-index: var(--z-sticky); margin-top: var(--space-4); }
+/* the one action that follows the scroll: solid ground behind it so rows never show through */
+.sticky-cta { position: sticky; bottom: calc(var(--size-navHeight) + env(safe-area-inset-bottom, 0px)); z-index: var(--z-sticky); padding: var(--space-2) 0; background: var(--semantic-bg-app); }
+.btn--cta:disabled { opacity: 1; background: var(--semantic-bg-cardHi); color: var(--semantic-text-disabled); }
 @media (min-width: 960px) { .sticky-cta { bottom: var(--space-4); } }
 .loading { padding: var(--space-8); text-align: center; color: var(--semantic-text-muted); }
 

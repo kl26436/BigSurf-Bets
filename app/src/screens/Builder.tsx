@@ -102,12 +102,14 @@ export function Builder() {
           );
         })}
       </section>
-      <div className="sticky-cta stack stack--tight">
-        <button className="btn btn--cta" disabled={!c.complete || save.isPending} onClick={() => finish("save")}>{save.isPending ? "Saving…" : "Save lineup"}</button>
-        <div className="inline">
-          <button className="btn grow" disabled={!c.complete} onClick={() => finish("file")}>Download for DraftKings</button>
-          <button className="btn btn--danger" disabled={c.filled === 0} onClick={() => setLineup(SLOTS.map(() => null))}>Clear lineup</button>
-        </div>
+      <div className="sticky-cta">
+        <button className="btn btn--cta" disabled={!c.complete || save.isPending} onClick={() => finish("save")}>
+          {save.isPending ? "Saving…" : c.complete ? "Save lineup" : c.filled === 9 ? "Fix the lineup to save" : `${9 - c.filled} more to pick`}
+        </button>
+      </div>
+      <div className="inline">
+        <button className="btn grow" disabled={!c.complete} onClick={() => finish("file")}>Download for DraftKings</button>
+        <button className="btn btn--danger" disabled={c.filled === 0} onClick={() => setLineup(SLOTS.map(() => null))}>Clear lineup</button>
       </div>
 
       {slot != null && (

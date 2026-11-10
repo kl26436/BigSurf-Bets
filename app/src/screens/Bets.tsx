@@ -78,7 +78,7 @@ export function Bets() {
                     return <div className="rowline" key={x.outcome}><div className="grow"><p className="strong">{describe(x)}</p><p className="small muted">{bookName(x.bookmaker)}</p></div>
                       <p className="pnum num">{odds(x.price_american)}<small>stake {usd(amt as number)}</small></p></div>;
                   })}
-                  <p className="small muted">Per $100 staked in total: {usd(split.profit)} back either way. Both books must accept the bet at these prices.</p>
+                  <p className="small muted">Stake $100 in total this way and you're up ${split.profit.toFixed(2)} whichever side wins. Both books must still be showing these prices.</p>
                 </div>
               );
             })}
