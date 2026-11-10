@@ -105,10 +105,10 @@ def test_features_do_not_see_the_game_they_describe(league):
     )
     alt = features.build(doctored)
     feats = features.feature_columns(base)
-    key = ["player_id", "season", "week"]
-    a = base.filter(hit).select(key + feats).to_dicts()[0]
-    b = alt.filter(hit).select(key + feats).to_dicts()[0]
-    assert a == b, {k: (a[k], b[k]) for k in a if a[k] != b[k]}
+    a = base.filter(hit).select(feats).to_numpy().astype(float)
+    b = alt.filter(hit).select(feats).to_numpy().astype(float)
+    # tolerance, not equality: group-by summation order is not deterministic to the last bit
+    np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9, equal_nan=True)
     nxt = (pl.col("player_id") == "AAA-WR0") & (pl.col("season") == 2024) & (pl.col("week") == 6)
     assert base.filter(nxt)["targets_s"][0] != alt.filter(nxt)["targets_s"][0]
 

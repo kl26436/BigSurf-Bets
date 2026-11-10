@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 model = [
     "lightgbm>=4.3",
+    "scikit-learn>=1.4",   # lightgbm's LGBMRegressor wrapper needs it
     "numpy>=1.26",
     "scipy>=1.11",
 ]

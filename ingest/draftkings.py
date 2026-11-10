@@ -25,6 +25,12 @@ CLASSIC_ROSTER = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
 SHOWDOWN_ROSTER = ["CPT", "FLEX", "FLEX", "FLEX", "FLEX", "FLEX"]
 
 
+# SQL: lower-case, drop a trailing generational suffix, keep letters only
+_NAME_KEY = (
+    "regexp_replace(regexp_replace(lower({col}), '\\s+(jr|sr|ii|iii|iv|v)\\.?$', ''), '[^a-z]', '', 'g')"
+)
+
+
 def _team(t: str | None) -> str | None:
     if not t:
         return None
@@ -114,13 +120,15 @@ def import_csv(
                      salary=excluded.salary, avg_points=excluded.avg_points, raw=excluded.raw""",
                 rows,
             )
-        # map DK names → our player ids (exact display-name + team match; refine later)
+        # map DK names → our player ids on normalized name + team. DK writes
+        # "James Cook III" / "Travis Etienne Jr." where nflverse has "James Cook" /
+        # "Travis Etienne", so suffixes and punctuation are stripped on both sides.
         conn.execute(
-            """update bsb.dfs_salaries s set player_id = p.player_id
+            f"""update bsb.dfs_salaries s set player_id = p.player_id
                from bsb.players p
                where s.slate_id = %s and s.player_id is null and p.sport = %s
-                 and lower(p.display_name) = lower(s.player_name)
-                 and (p.latest_team = s.team or s.position = 'DST')""",
+                 and {_NAME_KEY.format(col="p.display_name")} = {_NAME_KEY.format(col="s.player_name")}
+                 and p.latest_team = s.team and s.position <> 'DST'""",
             (slate_id, sport),
         )
         unmapped = conn.execute(
