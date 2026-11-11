@@ -2,7 +2,7 @@
 // number here is invented; the app labels the whole session "Sample data".
 import { SLOTS } from "./lineup";
 import {
-  DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun,
 } from "./types";
@@ -33,6 +33,9 @@ export const games: Game[] = MATCHUPS.map(([home, away, spread, total, hour]) =>
 export const slates: Slate[] = [{
   id: 1, slate_name: "sample", slate_type: "classic", season: 2026, week: 10, starts_at: day(0, 12), salary_cap: 50000,
   imported_at: hoursAgo(20), upcoming: true, n_players: 0, n_games: games.length,
+}, {  // last week's games: nothing behind them in the sample app, so the games picker has something to pick
+  id: 0, slate_name: "sample week 9", slate_type: "classic", season: 2026, week: 9, starts_at: day(-7, 12), salary_cap: 50000,
+  imported_at: hoursAgo(190), upcoming: false, n_players: 0, n_games: 0,
 }];
 
 const DEPTH: [Pos, number[]][] = [["QB", [19.5, 3]], ["RB", [15.5, 9.5, 4.5]], ["WR", [16, 12, 8.5, 5]], ["TE", [10, 4.5]], ["DST", [7]]];
@@ -102,7 +105,15 @@ export let sets: LineupSet[] = [
     summary: { players_used: 31, max_exposure_pct: 40, avg_proj: 131.2 }, on_latest_projections: false, archived_at: null },
 ];
 let nextSetId = 4;
-export const listSets = () => Promise.resolve(sets.slice());
+/** The sample app has one scratch: a back in the entered set is ruled out after it was built. */
+function scratchOne() {
+  const d = detailOf(sets[2]);
+  const used = d.players.filter((p) => p.pos === "RB").map((p) => p.dk_id);
+  const victim = pool.find((p) => p.dk_id === used.sort((a, b) => used.filter((x) => x === b).length - used.filter((x) => x === a).length)[0]);
+  if (victim) Object.assign(victim, { dk_status: "OUT", injury_status: "Out", dk_mean: null, model_dk_mean: null });
+}
+export const listSets = (slateId = 1) => Promise.resolve(sets.filter((s) => s.slate_id === slateId));
+export const poolFor = (slateId: number) => Promise.resolve(slateId === 1 ? pool.slice() : []);
 const change = (id: number, patch: Partial<LineupSet>) => { sets = sets.map((s) => (s.id === id ? { ...s, ...patch } : s)); };
 
 type Detail = { lineups: LineupRow[]; players: LineupPlayer[] };
@@ -112,25 +123,90 @@ function rows(setId: number, players: LineupPlayer[], n: number): LineupRow[] {
     const mine = players.filter((p) => p.lineup_no === k + 1);
     const proj = mine.reduce((a, p) => a + (p.dk_mean ?? 0), 0);
     return { set_id: setId, lineup_no: k + 1, salary: mine.reduce((a, p) => a + p.salary, 0), proj, sim_mean: proj * 0.99,
-      p10: proj * 0.78, p50: proj * 0.98, p90: proj * 1.24, p99: proj * 1.45, best_of_set_pct: 100 / n, actual_points: null };
+      p10: proj * 0.78, p50: proj * 0.98, p90: proj * 1.24, p99: proj * (1.38 + ((k * 7) % 5) * 0.03), best_of_set_pct: Math.round((100 / n) * (0.6 + ((k * 3) % 5) * 0.2) * 10) / 10,
+      actual_points: null, entered: false, edited_at: null };
   });
 }
 function detailOf(s: LineupSet): Detail {
   let d = details.get(s.id);
   if (!d) {
     const players = setPlayers(s.id, s.n_lineups);
-    d = { lineups: rows(s.id, players, s.n_lineups), players };
+    d = { lineups: rows(s.id, players, s.n_lineups).map((l) => ({ ...l, entered: s.entered })), players };
     details.set(s.id, d);
   }
   return d;
 }
+scratchOne();
 export function setDetail(setId: number): { set: LineupSet | null; lineups: LineupRow[]; players: LineupPlayer[] } {
   const s = sets.find((x) => x.id === setId);
   return s ? { set: s, ...detailOf(s) } : { set: null, lineups: [], players: [] };
 }
+const touch = (setId: number, d: Detail) => { details.set(setId, { lineups: d.lineups.slice(), players: d.players.slice() }); };
 export function setEntered(setId: number, entered: boolean) {
+  const s = sets.find((x) => x.id === setId);
+  if (s) touch(setId, { ...detailOf(s), lineups: detailOf(s).lineups.map((l) => ({ ...l, entered })) });
   change(setId, { entered });
   return Promise.resolve();
+}
+export function setLineupsEntered(setId: number, nos: number[], entered: boolean): Promise<number> {
+  const s = sets.find((x) => x.id === setId);
+  if (!s) return Promise.reject(new Error("no such lineup set"));
+  const lineups = detailOf(s).lineups.map((l) => (nos.includes(l.lineup_no) ? { ...l, entered } : l));
+  touch(setId, { ...detailOf(s), lineups });
+  const n = lineups.filter((l) => l.entered).length;
+  change(setId, { entered: n > 0 });
+  return Promise.resolve(n);
+}
+export function manyDetail(setIds: number[]): Promise<Detail> {
+  const ds = sets.filter((s) => setIds.includes(s.id)).map(detailOf);
+  return Promise.resolve({ lineups: ds.flatMap((d) => d.lineups), players: ds.flatMap((d) => d.players) });
+}
+export function replaceLineup(setId: number, lineupNo: number, ids: string[]) {
+  const s = sets.find((x) => x.id === setId);
+  if (!s) return Promise.reject(new Error("no such lineup set"));
+  const d = detailOf(s);
+  const fresh: LineupPlayer[] = ids.map((dk, i) => {
+    const p = pool.find((x) => x.dk_id === dk)!;
+    return { set_id: setId, lineup_no: lineupNo, slot_no: i, slot: SLOTS[i], dk_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos,
+      team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status };
+  });
+  touch(setId, {
+    players: [...d.players.filter((x) => x.lineup_no !== lineupNo), ...fresh],
+    lineups: d.lineups.map((l) => (l.lineup_no !== lineupNo ? l : { ...l, salary: fresh.reduce((a, x) => a + x.salary, 0),
+      proj: fresh.reduce((a, x) => a + (x.dk_mean ?? 0), 0), sim_mean: null, p10: null, p50: null, p90: null, p99: null, best_of_set_pct: null,
+      edited_at: new Date().toISOString() })),
+  });
+  change(setId, {});
+  return Promise.resolve();
+}
+
+// DraftKings entries: none until a file is added
+let entries: DkEntry[] = [];
+export const listEntries = () => Promise.resolve(entries.slice());
+const sameNine = (a: string[], b: string[]) => a.slice().sort().join() === b.slice().sort().join();
+export function importEntries(rows: unknown[]): Promise<{ entries: number; linked: number }> {
+  const now = new Date().toISOString();
+  entries = (rows as { entry_id: string; contest_id: string | null; contest_name: string | null; entry_fee: string | null; players: string[] | null }[]).map((r) => {
+    const old = entries.find((e) => e.entry_id === r.entry_id);
+    let link = old?.set_id != null ? { set_id: old.set_id, lineup_no: old.lineup_no } : { set_id: null as number | null, lineup_no: null as number | null };
+    if (link.set_id == null && r.players) {
+      for (const s of sets.filter((x) => !x.archived_at)) {
+        const d = detailOf(s);
+        const hit = d.lineups.find((l) => sameNine(d.players.filter((p) => p.lineup_no === l.lineup_no).map((p) => p.dk_id), r.players!));
+        if (hit) { link = { set_id: s.id, lineup_no: hit.lineup_no }; void setLineupsEntered(s.id, [hit.lineup_no], true); break; }
+      }
+    }
+    return { entry_id: r.entry_id, slate_id: 1, contest_id: r.contest_id, contest_name: r.contest_name, entry_fee: r.entry_fee == null ? null : Number(r.entry_fee),
+      players: r.players, ...link, imported_at: now };
+  });
+  return Promise.resolve({ entries: entries.length, linked: entries.filter((e) => e.set_id != null).length });
+}
+export function assignEntries(list: { entry_id: string; set_id: number | null; lineup_no?: number | null }[]): Promise<number> {
+  for (const a of list) {
+    entries = entries.map((e) => (e.entry_id === a.entry_id ? { ...e, set_id: a.set_id, lineup_no: a.set_id == null ? null : a.lineup_no ?? null } : e));
+    if (a.set_id != null && a.lineup_no != null) void setLineupsEntered(a.set_id, [a.lineup_no], true);
+  }
+  return Promise.resolve(list.length);
 }
 export function renameSet(setId: number, label: string | null) {
   change(setId, { label: label?.trim().slice(0, 60) || null });
@@ -169,7 +245,7 @@ export function saveLineup(ids: string[], label?: string | null): Promise<number
   });
   const proj = players.reduce((a, x) => a + (x.dk_mean ?? 0), 0);
   details.set(id, { players, lineups: [{ set_id: id, lineup_no: 1, salary: players.reduce((a, x) => a + x.salary, 0), proj, sim_mean: null,
-    p10: null, p50: null, p90: null, p99: null, best_of_set_pct: null, actual_points: null }] });
+    p10: null, p50: null, p90: null, p99: null, best_of_set_pct: null, actual_points: null, entered: false, edited_at: null }] });
   sets = [{ id, created_at: new Date().toISOString(), slate_id: 1, run_id: 9, mode: "manual", source: "manual", entered: false,
     label: label?.trim() || null, job_id: null, n_lineups: 1, settings: {}, summary: {}, on_latest_projections: true, archived_at: null }, ...sets];
   return Promise.resolve(id);

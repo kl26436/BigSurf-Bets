@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { GamesPicker } from "../components/GamesPicker";
 import { Empty, ErrorNote, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
@@ -47,6 +48,7 @@ export function Players() {
       <div>
         <p className="eyebrow">{slate ? `DraftKings · ${slate.n_games} games` : "All games this week"}</p>
         <h1 className="title">Players</h1>
+        <GamesPicker />
       </div>
       <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setPlayersView({ text: e.target.value })} />
       <div className="chips" role="group" aria-label="Position">

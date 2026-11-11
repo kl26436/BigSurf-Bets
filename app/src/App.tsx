@@ -6,7 +6,10 @@ import { useAppNavigation, useGoUp } from "./lib/nav";
 import { useStore } from "./lib/store";
 import { Bets } from "./screens/Bets";
 import { Builder } from "./screens/Builder";
-import { Lineups, SetDetail } from "./screens/Lineups";
+import { Compare } from "./screens/Compare";
+import { Lineups } from "./screens/Lineups";
+import { SetDetail } from "./screens/SetDetail";
+import { Swap } from "./screens/Swap";
 import { League, More, Results, SettingsScreen } from "./screens/More";
 import { Players } from "./screens/Players";
 import { SignIn } from "./screens/SignIn";
@@ -75,6 +78,8 @@ function Shell() {
             <Route path="/players" element={<Players />} />
             <Route path="/lineups" element={<Lineups />} />
             <Route path="/lineups/build" element={<Builder />} />
+            <Route path="/lineups/swap" element={<Swap />} />
+            <Route path="/lineups/compare/:a/:b" element={<Compare />} />
             <Route path="/lineups/:id" element={<SetDetail />} />
             <Route path="/bets" element={<Bets />} />
             <Route path="/more" element={<More />} />

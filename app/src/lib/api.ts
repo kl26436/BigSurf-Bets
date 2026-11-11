@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import * as demo from "./demo";
 import {
-  DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun,
 } from "./types";
@@ -28,7 +28,7 @@ function num<T>(rows: T[]): T[] {
   return rows;
 }
 
-const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note"]);
+const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name"]);
 
 /** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
 async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
@@ -74,13 +74,13 @@ export const useGames = () =>
   useQuery({ queryKey: ["games"], queryFn: () => (DEMO ? demo.games : all<Game>("app_games", (q) => q.order("kickoff_at"))) });
 export const usePool = (slateId: number | undefined) =>
   useQuery({ queryKey: ["pool", slateId], enabled: slateId != null, staleTime: MIN,
-    queryFn: () => (DEMO ? demo.pool : all<PoolPlayer>("app_pool", (q) => q.eq("slate_id", slateId).order("salary", { ascending: false }))) });
+    queryFn: () => (DEMO ? demo.poolFor(slateId!) : all<PoolPlayer>("app_pool", (q) => q.eq("slate_id", slateId).order("salary", { ascending: false }))) });
 export const useProjections = (enabled = true) =>
   useQuery({ queryKey: ["projections"], enabled, staleTime: MIN,
     queryFn: () => (DEMO ? demo.pool : all<PoolPlayer>("app_projections", (q) => q.order("dk_mean", { ascending: false }))) });
 export const useSets = (slateId: number | undefined) =>
   useQuery({ queryKey: ["sets", slateId], enabled: slateId != null, refetchInterval: MIN,
-    queryFn: () => (DEMO ? demo.listSets() : all<LineupSet>("app_lineup_sets", (q) => q.eq("slate_id", slateId).order("created_at", { ascending: false }))) });
+    queryFn: () => (DEMO ? demo.listSets(slateId!) : all<LineupSet>("app_lineup_sets", (q) => q.eq("slate_id", slateId).order("created_at", { ascending: false }))) });
 export const useSet = (setId: number | undefined) =>
   useQuery({ queryKey: ["set", setId], enabled: setId != null, queryFn: async () => {
     if (DEMO) return demo.setDetail(setId!);
@@ -91,6 +91,19 @@ export const useSet = (setId: number | undefined) =>
     ]);
     return { set: sets[0] ?? null, lineups, players };
   } });
+/** Every lineup and player of several sets at once: entries and swaps look across sets. */
+export const useSetsDetail = (setIds: number[]) =>
+  useQuery({ queryKey: ["set", "many", setIds.join(",")], enabled: setIds.length > 0, queryFn: async () => {
+    if (DEMO) return demo.manyDetail(setIds);
+    const [lineups, players] = await Promise.all([
+      all<LineupRow>("app_lineups", (q) => q.in("set_id", setIds).order("set_id").order("lineup_no")),
+      all<LineupPlayer>("app_lineup_players", (q) => q.in("set_id", setIds).order("set_id").order("lineup_no").order("slot_no")),
+    ]);
+    return { lineups, players };
+  } });
+export const useEntries = (slateId: number | undefined) =>
+  useQuery({ queryKey: ["entries", slateId], enabled: slateId != null,
+    queryFn: () => (DEMO ? demo.listEntries() : all<DkEntry>("app_dk_entries", (q) => q.eq("slate_id", slateId).order("contest_name").order("entry_id"))) });
 export const useQuotes = () =>
   useQuery({ queryKey: ["quotes"], staleTime: MIN, queryFn: () => (DEMO ? demo.quotes : all<LineQuote>("app_line_quotes")) });
 export const usePropEdges = () =>
@@ -138,6 +151,23 @@ export const useSaveLineup = () =>
 export const useSetEntered = () =>
   useWrite((a: { set_id: number; entered: boolean }) =>
     DEMO ? demo.setEntered(a.set_id, a.entered) : rpc("bsb_set_entered", { p_set_id: a.set_id, p_entered: a.entered }), ["sets", "set"]);
+/** → how many of the set's lineups are now entered */
+export const useSetLineupsEntered = () =>
+  useWrite((a: { set_id: number; lineup_nos: number[]; entered: boolean }) =>
+    DEMO ? demo.setLineupsEntered(a.set_id, a.lineup_nos, a.entered)
+      : rpc<number>("bsb_set_lineups_entered", { p_set_id: a.set_id, p_lineup_nos: a.lineup_nos, p_entered: a.entered }), ["sets", "set"]);
+/** Nine DraftKings ids in slot order take the place of a stored lineup's players (a late swap). */
+export const useReplaceLineup = () =>
+  useWrite((a: { set_id: number; lineup_no: number; players: string[] }) =>
+    DEMO ? demo.replaceLineup(a.set_id, a.lineup_no, a.players)
+      : rpc("bsb_replace_lineup", { p_set_id: a.set_id, p_lineup_no: a.lineup_no, p_players: a.players }), ["sets", "set"]);
+export const useImportEntries = () =>
+  useWrite((a: { slate_id: number; entries: unknown[] }) =>
+    DEMO ? demo.importEntries(a.entries) : rpc<{ entries: number; linked: number }>("bsb_import_dk_entries", { p_slate_id: a.slate_id, p_entries: a.entries }),
+    ["entries", "sets", "set"]);
+export const useAssignEntries = () =>
+  useWrite((a: { assignments: { entry_id: string; set_id: number | null; lineup_no?: number | null }[] }) =>
+    DEMO ? demo.assignEntries(a.assignments) : rpc<number>("bsb_assign_entries", { p_assignments: a.assignments }), ["entries", "sets", "set"]);
 export const useRenameSet = () =>
   useWrite((a: { set_id: number; label: string | null }) =>
     DEMO ? demo.renameSet(a.set_id, a.label) : rpc("bsb_rename_set", { p_set_id: a.set_id, p_label: a.label }), ["sets", "set"]);

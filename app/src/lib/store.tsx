@@ -18,6 +18,9 @@ interface Store {
   setHand: (ids: (string | null)[]) => void;
   savedHand: SavedHand | null;
   setSavedHand: (s: SavedHand | null) => void;
+  /** games picked for this visit (null: the current ones) */
+  slateId: number | null;
+  setSlateId: (id: number | null) => void;
   playersView: PlayersView;
   setPlayersView: (patch: Partial<PlayersView>) => void;
   toast: Toast | null;
@@ -40,6 +43,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [savedHand, setSavedHand] = useState<SavedHand | null>(() => load("bsb-saved-hand", null));
   // kept for the session, not across launches: a filter left on from last week hides players
   const [playersView, setView] = useState<PlayersView>({ pos: "ALL", sort: "points", text: "" });
+  const [slateId, setSlateId] = useState<number | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -60,8 +64,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const value = useMemo<Store>(() => ({
     marks, setMark, clearMarks: () => setMarks({}), hand: hand.length === 9 ? hand : EMPTY, setHand: setHandState,
-    savedHand, setSavedHand, playersView, setPlayersView, toast, say,
-  }), [marks, setMark, hand, savedHand, playersView, setPlayersView, toast, say]);
+    savedHand, setSavedHand, slateId, setSlateId, playersView, setPlayersView, toast, say,
+  }), [marks, setMark, hand, savedHand, slateId, playersView, setPlayersView, toast, say]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
