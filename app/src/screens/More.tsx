@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Empty, ErrorNote, Loading, PlayerName, PosTag, Stepper } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Stepper } from "../components/ui";
 import { DEMO, supabase, useDispatches, useFreeAgents, useJobs, useRoster, useSaveSettings, useScorecards, useSettings, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, bookName, kickoff, pct, pts, signed, usd } from "../lib/format";
 import { useTitle } from "../lib/nav";
@@ -104,27 +104,34 @@ function WaiverBids() {
   const eitherOr = bids.filter((c) => c.either_or === bids[0]?.either_or).length > 1;
   return (
     <section aria-label="Waiver bids" className="stack stack--tight">
-      <div className="card__head"><h2 className="h2">Waiver bids</h2><span className="small muted">Week {r.week} · {r.teams_left} teams left · worked out {ago(r.created_at)}</span></div>
+      <div className="card__head"><h2 className="h2">Waiver bids</h2><Facts as="span" items={[`Week ${r.week}`, `${r.teams_left} teams left`, `worked out ${ago(r.created_at)}`]} /></div>
       <div className="card card--pad">
         <dl className="kv kv--3">
           <div><dt>Money left</dt><dd className="big num">{usd(r.budget)}</dd></div>
-          <div><dt>Chopped this week</dt><dd className={`big num ${r.chop >= 0.15 ? "bad" : ""}`}>{pct(r.chop)}</dd></div>
-          <div><dt>Win the league</dt><dd className="big big--accent num">{pct(r.win)}</dd></div>
+          <div><dt>Chopped</dt><dd className={`big num ${r.chop >= 0.15 ? "bad" : ""}`}>{pct(r.chop)}</dd></div>
+          <div><dt>Win it all</dt><dd className="big big--accent num">{pct(r.win)}</dd></div>
         </dl>
-        <p className="small muted">Chances as your roster stands, before any pick-up.</p>
+        <p className="small muted">Your chance of being chopped this week and of winning the league, as your roster stands before any pick-up.</p>
       </div>
       {bids.length === 0 ? <div className="card card--pad"><p className="strong">No bid worth making</p><p className="small">Nobody available improves your lineup enough to spend on this week.</p></div> : (
         <div className="card">
           {bids.map((c) => (
-            <div className="prow" key={c.sleeper_id}>
+            <div className="prow prow--top" key={c.sleeper_id}>
               <PosTag pos={c.pos} />
               <div className="grow">
                 <p className="pname">{c.name}</p>
-                <p className="pmeta">Wins about {pct(c.win_at_bid)} of the time · drop {c.drop_name ?? "your weakest player"}</p>
-                <p className="pmeta">{signed(c.gain_avg)} points a week · chop risk {signed(c.d_chop * 100)} points · {(c.can_outbid ?? []).length === 0 ? "nobody has the money to outbid this" : `${(c.can_outbid ?? []).length} ${(c.can_outbid ?? []).length === 1 ? "team has" : "teams have"} the money to outbid this`}</p>
-                <p className="pmeta">Safer: {usd(c.bid_80)} wins 8 in 10, {usd(c.bid_95)} wins 19 in 20</p>
+                <p className="small">Drop {c.drop_name ?? "your weakest player"}</p>
               </div>
-              <p className="pnum num">{usd(c.bid)}<small>bid</small></p>
+              <p className="pnum num"><small>Bid</small>{usd(c.bid)}</p>
+              <div className="prow__wide">
+                <dl className="mini">
+                  <div><dt>Wins the bid</dt><dd className="num">{pct(c.win_at_bid)}</dd></div>
+                  <div><dt>Points a week</dt><dd className="num">{signed(c.gain_avg)}</dd></div>
+                  <div><dt>Chance of the chop</dt><dd className="num">{pct(r.chop)} → {pct(Math.max(0, r.chop + c.d_chop))}</dd></div>
+                </dl>
+                <Facts items={[`Safer: ${usd(c.bid_80)} wins 8 in 10`, `${usd(c.bid_95)} wins 19 in 20`]} />
+                <p className="small muted">{(c.can_outbid ?? []).length === 0 ? "Nobody has the money to outbid this." : `${(c.can_outbid ?? []).length} ${(c.can_outbid ?? []).length === 1 ? "team has" : "teams have"} the money to outbid this.`}</p>
+              </div>
             </div>
           ))}
           {eitherOr && <p className="small muted card--pad">The bids that share a drop are either/or: enter the same player to drop on each, and put the one you want most first.</p>}

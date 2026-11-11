@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Entries } from "../components/Entries";
 import { GamesPicker } from "../components/GamesPicker";
-import { Empty, ErrorNote, Loading, Sheet, Stepper } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, Sheet, Stepper } from "../components/ui";
 import { useDismissJob, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
 import { ago, pts, slateTitle } from "../lib/format";
 import { buildCards, describeSettings, visibleSets, type BuildCard } from "../lib/lineup";
@@ -28,8 +28,8 @@ function SetCard({ s }: { s: LineupSet }) {
         <h2 className="h2">{setName(s)}</h2>
         <span className="small muted">{ago(s.created_at)}</span>
       </div>
-      <p className="small">{s.n_lineups} {s.n_lineups === 1 ? "lineup" : "lineups"}{sm.avg_proj ? ` · ${pts(sm.avg_proj)} expected on average` : ""}{sm.players_used ? ` · ${sm.players_used} players` : ""}</p>
-      {built.length > 0 && <p className="small muted">{built.join(" · ")}</p>}
+      <Facts className="small" items={[`${s.n_lineups} ${s.n_lineups === 1 ? "lineup" : "lineups"}`, sm.avg_proj ? `${pts(sm.avg_proj)} expected on average` : null, sm.players_used ? `${sm.players_used} players` : null]} />
+      <Facts items={built} />
       <div className="inline">
         <span className="pill">{SOURCE[s.source] ?? s.source}</span>
         {s.entered && <span className="pill pill--ok">Entered</span>}

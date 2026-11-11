@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Empty, Icon, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
+import { Empty, Facts, Icon, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
 import { usePool, useSaveLineup } from "../lib/api";
 import { kickoff, pts, slateTitle, usd } from "../lib/format";
 import { SLOTS, SLOT_LABEL, addPlayer, arrangeForLateSwap, check, handKey, pickerChoices, removeAt, toDkCsv, value, type Lineup, type PickSort } from "../lib/lineup";
@@ -94,7 +94,7 @@ export function Builder() {
           <div><dt>Expected points</dt><dd className="big big--accent num">{pts(c.expected)}</dd></div>
         </dl>
         <progress className={`bar ${c.left < 0 ? "bar--over" : ""}`} max={slate.salary_cap} value={Math.min(c.salary, slate.salary_cap)} aria-label="Budget used" />
-        <p className="small muted">{c.perOpenSpot != null ? `${usd(c.perOpenSpot)} per open spot · ` : ""}{c.filled} of 9 players · locks {kickoff(slate.starts_at)}</p>
+        <Facts items={[c.perOpenSpot != null ? `${usd(c.perOpenSpot)} per open spot` : null, `${c.filled} of 9 players`, `locks ${kickoff(slate.starts_at)}`]} />
         {c.problems.map((m) => <p key={m} className="small bad" role="alert">{m}</p>)}
       </section>
 
@@ -116,7 +116,7 @@ export function Builder() {
               ) : (
                 <button className="grow prow__open" aria-pressed={wide ? active === i : undefined} onClick={() => (wide ? setFocus(active === i ? null : i) : openPicker(i))}>
                   <p className="add">Add player</p>
-                  <p className="pmeta">{wide ? (active === i ? "Choosing for this spot" : s === "FLEX" ? "Any position · click to choose for this spot" : "Click to choose for this spot") : s === "FLEX" ? "Any position · tap to choose" : "Tap to choose"}</p>
+                  <p className="pmeta">{wide ? (active === i ? "Choosing for this spot" : s === "FLEX" ? "Any position. Click to choose for this spot" : "Click to choose for this spot") : s === "FLEX" ? "Any position. Tap to choose" : "Tap to choose"}</p>
                 </button>
               )}
             </div>

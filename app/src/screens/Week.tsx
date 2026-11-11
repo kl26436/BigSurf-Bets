@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Empty, ErrorNote, Fresh, Icon, Loading } from "../components/ui";
+import { Empty, ErrorNote, Facts, Fresh, Icon, Loading } from "../components/ui";
 import { useBets, useEntries, useGames, useHealth, useJobs, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
 import { visibleSets } from "../lib/lineup";
@@ -135,7 +135,7 @@ export function Week() {
               <div className="rowline" key={g.game_id}>
                 <div className="grow">
                   <p className="strong">{g.away_team} at {g.home_team}</p>
-                  <p className="small muted">{kickoff(g.kickoff_at)} · {g.home_team} {signed(g.spread_line == null ? null : -g.spread_line)} · Total {pts(g.total_line)}</p>
+                  <Facts items={[kickoff(g.kickoff_at), `${g.home_team} ${signed(g.spread_line == null ? null : -g.spread_line)}`, `Total ${pts(g.total_line)}`]} />
                 </div>
                 <div className="right num">
                   <p className="strong">{g.home_team} {pts(g.home_implied)}</p>

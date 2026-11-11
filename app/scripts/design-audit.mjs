@@ -19,6 +19,13 @@ for (const f of walk("src").filter((f) => f.endsWith(".tsx"))) {
   if (/style=\{\{/.test(src)) problems.push(`${f}: inline style`);
   // user-facing strings: JSX text and string literals passed as copy
   const strings = [...src.matchAll(/>([^<>{}\n]+)</g), ...src.matchAll(/(?:title|why|how|note|label|placeholder|aria-label)[=:]\s*"([^"]+)"/g)].map((m) => m[1]);
+  // Three or more facts strung together with dots wrap in the middle of a fact on a phone:
+  // such a line goes through <Facts>, which only breaks between facts. (One-line labels that
+  // truncate, and the options of a select, are exempt.)
+  src.split("\n").forEach((line, i) => {
+    if (/className="[^"]*\b(small|pmeta)\b[^"]*"/.test(line) && !/ellipsis|<option|<Facts/.test(line) && (line.match(/ · /g) ?? []).length >= 2)
+      problems.push(`${f}:${i + 1} three or more facts joined by dots — use <Facts>`);
+  });
   for (const s of strings) {
     const hit = s.match(BANNED);
     if (hit) problems.push(`${f}: "${s.trim().slice(0, 60)}" uses "${hit[0]}"`);
