@@ -25,4 +25,17 @@ App: My league → Waiver bids (`app_waiver_run`, `app_waiver_recs`).
 - Team scores are independent (no shared-game correlation).
 - The rival model has one league and one season of history; it cannot see desperation (a team at 25% chop risk may bid everything).
 - `dollar_value` is a rule of thumb, not an optimum.
-- Not graded yet: after each waiver run compare `bid_50/80/95` with the actual winning bids in `fantasy_transactions`.
+- Prices are graded from the next run on (`bids.grade_prices`, shown in the app as "How last week's prices did"): each
+  priced player's highest rival bid beside the 50 / 80 / 95% prices. A handful of players a week: read it over a season.
+
+## Also worked out each run (stored on `waiver_runs`, shown on My league)
+- `lineup`: the best legal lineup for the week about to be played, per player `start` and the spot. The app compares it
+  with the lineup set in Sleeper. Falls back to a plain same-position rule when the roster changed after the run.
+- `advice.needs`: each starting spot against the median of the same spot on the other live teams.
+- `coming`: per rival, the chance it is chopped this week / within three weeks, and its three best players for my lineup.
+  A team chopped after this week's games has its players in next Wednesday's auction.
+- `advice.verdict` (now / wait / either / hold): the best player on offer now against the best one expected to come
+  free after this week's chop (each rival's best player for me × that rival's chance of going). A rule of thumb: it
+  ignores that every other team bids on those players too, and that money not spent keeps its value.
+- After Thursday night the latest projection run no longer carries teams that have played. The league run uses each
+  player's newest projection for the week instead, so a Thursday player is not counted as zero.

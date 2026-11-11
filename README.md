@@ -124,6 +124,14 @@ bsb lineups build --csv slates/2026-w10-main.csv --projections data/projections/
 Not modelled yet: field ownership (so no leverage), showdown slates, late swap, and — because there
 is no archive of past DK salaries — no historical ROI backtest of the lineups themselves.
 
+### Showdown (single game, captain) — `optimizer/showdown.py`
+Six players from one game, $50,000; the captain costs and scores 1.5x. A showdown salary export lists every player
+twice (captain row, ordinary row); the solver picks captain / ordinary / neither per player, at least one from each
+team. Same simulation and set-building as classic; two lineups with the same six and a different captain differ by one.
+Kickers are projected for this (`model/kicker.py`, see `docs/model/kicker.md`: close to league average for everyone).
+`bsb lineups build --slate-type showdown`; the Lineups workflow builds 10 for the newest upcoming single-game slate.
+Not built for showdown: building by hand, swaps, the entries file.
+
 ## Markets and edges (`markets/`)
 
 ```bash

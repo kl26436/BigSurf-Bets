@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type PushDevice, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
+  type Contest, type ContestEntry, type ContestPlayer,
 } from "./types";
 
 let seed = 7;
@@ -538,4 +539,55 @@ export function deleteDevice(): Promise<number> {
   const n = devices.length;
   devices = [];
   return Promise.resolve(n);
+}
+
+// ---- contest results --------------------------------------------------------------
+let contestList: Contest[] = [
+  { id: 2, slate_id: 0, season: 2026, week: 9, slate_type: "classic", contest_key: "171200002", name: "NFL $5 Double Up", entry_fee: 5, n_entries: 1149,
+    imported_at: hoursAgo(40), scores: { max: 214.1, p99: 196.4, p90: 172.8, p75: 158.3, p50: 141.9, min: 61.2 }, n_mine: 1, best_rank: 388, best_points: 148.6,
+    won: 10, n_unsettled: 0, paid: 5, profit: 5 },
+  { id: 1, slate_id: 0, season: 2026, week: 9, slate_type: "classic", contest_key: "171200001", name: "NFL $3 Play-Action", entry_fee: 3, n_entries: 47562,
+    imported_at: hoursAgo(41), scores: { max: 251.3, p99: 205.7, p90: 181.2, p75: 163.9, p50: 144.5, min: 38.8 }, n_mine: 3, best_rank: 2214, best_points: 186.3,
+    won: 0, n_unsettled: 3, paid: 9, profit: null },
+];
+let contestEntryList: ContestEntry[] = [
+  { contest_id: 2, entry_id: "5200001", entry_name: "you", rank: 388, points: 148.6, lineup: "", winnings: 10, set_id: 1, lineup_no: 1 },
+  { contest_id: 1, entry_id: "5100001", entry_name: "you (1/3)", rank: 2214, points: 186.3, lineup: "", winnings: null, set_id: 1, lineup_no: 2 },
+  { contest_id: 1, entry_id: "5100002", entry_name: "you (2/3)", rank: 19870, points: 149.1, lineup: "", winnings: null, set_id: 1, lineup_no: 3 },
+  { contest_id: 1, entry_id: "5100003", entry_name: "you (3/3)", rank: 33102, points: 128.4, lineup: "", winnings: null, set_id: null, lineup_no: null },
+];
+const recount = () => { contestList = contestList.map((c) => {
+  const mine = contestEntryList.filter((e) => e.contest_id === c.id);
+  const open = mine.filter((e) => e.winnings == null).length, won = mine.reduce((a, e) => a + (e.winnings ?? 0), 0);
+  const paid = c.entry_fee == null ? null : c.entry_fee * mine.length;
+  return { ...c, n_mine: mine.length, won, n_unsettled: open, paid, profit: open === 0 && paid != null ? won - paid : null };
+}); };
+export const listContests = () => Promise.resolve(contestList.slice());
+export const listContestEntries = () => Promise.resolve(contestEntryList.slice());
+export const contestPlayers = (contestId: number): Promise<ContestPlayer[]> => Promise.resolve(pool.filter((p) => (p.dk_mean ?? 0) > 9).slice(0, 14).map((p, i) => ({
+  contest_id: contestId, name: p.name, roster_position: p.pos, player_id: p.player_id, pct_drafted: Math.round((38 - i * 2.4 + (i % 3)) * 10) / 10,
+  fpts: Math.round((p.dk_mean ?? 0) * (0.4 + ((i * 5) % 7) / 4) * 10) / 10 })));
+export function importContest(c: Record<string, unknown>): Promise<{ contest_id: number; entries: number; players: number }> {
+  const mine = (c.entries as { entry_id: string; entry_name: string; rank: number | null; points: number | null; lineup: string }[]) ?? [];
+  const had = contestList.find((x) => x.contest_key === c.contest_key);
+  const id = had?.id ?? Math.max(0, ...contestList.map((x) => x.id)) + 1;
+  const row: Contest = { id, slate_id: 0, season: 2026, week: 9, slate_type: "classic", contest_key: String(c.contest_key), name: had?.name ?? null, entry_fee: had?.entry_fee ?? null,
+    n_entries: Number(c.n_entries), imported_at: new Date().toISOString(), scores: (c.scores as Contest["scores"]) ?? null, n_mine: 0, best_rank: mine[0]?.rank ?? null,
+    best_points: Math.max(0, ...mine.map((e) => e.points ?? 0)) || null, won: 0, n_unsettled: 0, paid: null, profit: null };
+  contestList = [row, ...contestList.filter((x) => x.id !== id)];
+  contestEntryList = [...contestEntryList.filter((e) => e.contest_id !== id || mine.some((m) => m.entry_id === e.entry_id)),
+    ...mine.filter((m) => !contestEntryList.some((e) => e.contest_id === id && e.entry_id === m.entry_id)).map((m) => ({ contest_id: id, ...m, winnings: null, set_id: null, lineup_no: null }))];
+  recount();
+  return Promise.resolve({ contest_id: id, entries: mine.length, players: ((c.ownership as unknown[]) ?? []).length });
+}
+export function setContestMoney(id: number, fee: number | null, name: string | null, winnings: Record<string, number | null>): Promise<void> {
+  contestList = contestList.map((c) => (c.id === id ? { ...c, entry_fee: fee ?? c.entry_fee, name: name?.trim() || c.name } : c));
+  contestEntryList = contestEntryList.map((e) => (e.contest_id === id && e.entry_id in winnings ? { ...e, winnings: winnings[e.entry_id] } : e));
+  recount();
+  return Promise.resolve();
+}
+export function deleteContest(id: number): Promise<void> {
+  contestList = contestList.filter((c) => c.id !== id);
+  contestEntryList = contestEntryList.filter((e) => e.contest_id !== id);
+  return Promise.resolve();
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Contests } from "../components/Contests";
 import { NotificationSettings } from "../components/Notifications";
 import { Empty, ErrorNote, Loading, PosTag, Stepper } from "../components/ui";
 import { DEMO, supabase, useDispatches, useJobs, usePlayerResults, usePropResults, useSaveSettings, useScorecards, useSettings } from "../lib/api";
@@ -34,7 +35,7 @@ export function More() {
   );
 }
 
-const POSN: Record<string, string> = { QB: "Quarterbacks", RB: "Running backs", WR: "Wide receivers", TE: "Tight ends", DST: "Defenses", ALL: "Everyone" };
+const POSN: Record<string, string> = { QB: "Quarterbacks", RB: "Running backs", WR: "Wide receivers", TE: "Tight ends", DST: "Defenses", K: "Kickers", ALL: "Everyone but kickers" };
 
 export function Results() {
   const cards = useScorecards();
@@ -45,12 +46,14 @@ export function Results() {
     <div className="stack">
       <div><h1 className="title">Results</h1>
         <p className="small muted">Graded every Tuesday against what happened. One week proves little; the running record is what counts.</p></div>
+      <Contests />
+      <div className="card__head"><h2 className="h2">Week by week</h2><span className="small muted">Numbers, lineups and bets against what happened</span></div>
       {(cards.data ?? []).length === 0 && <Empty title="No week has been graded yet" why="A week is graded once all its games are final and it had expected points on file before kickoff." how="The first one lands the Tuesday after this week's games." />}
       {(cards.data ?? []).map((c) => {
         const p = c.metrics.projections, pr = c.metrics.props;
         return (
           <section className="stack stack--tight" key={`${c.season}-${c.week}`} aria-label={`Week ${c.week}`}>
-            <div className="spread"><h2 className="h2">Week {c.week}, {c.season}</h2><span className="small muted">Graded {ago(c.created_at)}</span></div>
+            <div className="spread"><h3 className="h2">Week {c.week}, {c.season}</h3><span className="small muted">Graded {ago(c.created_at)}</span></div>
             {p && (
               <div className="card card--pad scroll-x">
                 <p className="strong">Expected points vs what players scored</p>
@@ -187,6 +190,10 @@ export function SettingsScreen() {
         <Stepper label="Stake size (share of the full Kelly stake)" value={draft.stake_fraction} onChange={(v) => set("stake_fraction", v)} min={0.05} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} />
         <Stepper label="Most to put on one bet" value={draft.max_stake_pct} onChange={(v) => set("max_stake_pct", v)} min={0.01} max={0.25} step={0.01} format={(v) => `${Math.round(v * 100)}% · ${usd(v * draft.balance_bets)}`} />
         <p className="small muted">Suggested stakes on the Bets tab come from these. A quarter of the Kelly stake is the usual choice: slower growth, far smaller swings.</p>
+        <label className="field"><span>DraftKings username</span>
+          <input className="input" type="text" autoCapitalize="off" autoCorrect="off" maxLength={40} placeholder="Finds your entries in a contest results file" value={draft.dk_username}
+            onChange={(e) => set("dk_username", e.target.value)} />
+        </label>
         <p className="eyebrow">Sportsbooks you can bet at</p>
         <div className="chips chips--wrap" role="group" aria-label="Sportsbooks">
           {BOOKS.map((b) => <button key={b} className="chip" aria-pressed={draft.books.includes(b)} onClick={() => set("books", draft.books.includes(b) ? draft.books.filter((x) => x !== b) : [...draft.books, b])}>{bookName(b)}</button>)}

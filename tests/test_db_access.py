@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 17
+    assert len(db.migrate(url)) >= 18
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -317,6 +317,64 @@ def test_a_showdown_salary_file_becomes_captain_lineups(db_url, monkeypatch, tmp
         assert c.execute("select count(*) from bsb.lineup_sets where slate_id = %s and source = 'auto'", (sd,)).fetchone()[0] == 1
         # kickers never show up as fantasy pick-ups
         assert c.execute("select pg_get_viewdef('public.app_free_agents'::regclass)").fetchone()[0].count("'K'") == 0
+
+
+def test_contest_results_are_kept_small_and_money_is_typed_in(db_url):
+    """What the app sends after reading a contest results file: the user's entries, the
+    field's scores and every player's share of lineups. The games are worked out from the players."""
+    with psycopg.connect(db_url) as c:
+        # contests are added after the games: for this test the classic slate started yesterday
+        before = c.execute("select starts_at from bsb.dfs_slates where id = 1").fetchone()[0]
+        c.execute("update bsb.dfs_slates set starts_at = now() - interval '1 day' where id = 1")
+        names = [r[0] for r in c.execute("select player_name from bsb.dfs_salaries where slate_id = 1 and position <> 'DST' order by salary desc limit 8")]
+        c.commit()
+    file = {"contest_key": "171234567", "n_entries": 47562, "scores": {"max": 251.3, "p99": 205.7, "p90": 181.2, "p75": 164, "p50": 144.5, "min": 38.8},
+            "entries": [{"entry_id": "9001", "entry_name": "kevlap (1/2)", "rank": 2214, "points": 186.3, "lineup": "QB a RB b"},
+                        {"entry_id": "9002", "entry_name": "kevlap (2/2)", "rank": 30112, "points": 131.02, "lineup": "QB c RB d"}],
+            "ownership": [{"name": n, "roster_position": "FLEX", "pct_drafted": 30 - i, "fpts": 20.5 + i} for i, n in enumerate(names)]
+                         + [{"name": "Somebody Unknown", "roster_position": "WR", "pct_drafted": 0.4, "fpts": 1.2}]}
+    try:
+        with As(db_url, "anon") as c:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute("select public.bsb_import_contest(null, %s::jsonb)", (json.dumps(file),))
+            for v in ("app_contests", "app_contest_entries", "app_contest_ownership"):
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    c.execute(f"select 1 from public.{v} limit 1")
+        with As(db_url, "authenticated", BOB) as c:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute("select public.bsb_import_contest(null, %s::jsonb)", (json.dumps(file),))
+        with As(db_url, "authenticated", ALICE) as c:
+            out = c.execute("select public.bsb_import_contest(null, %s::jsonb)", (json.dumps(file),)).fetchone()[0]
+            cid = out["contest_id"]
+            assert (out["entries"], out["players"]) == (2, 9)
+            row = c.execute("select slate_id, week, n_entries, n_mine, best_rank, best_points, won, n_unsettled, paid, profit, scores->>'p90' from public.app_contests").fetchone()
+            assert row[:5] == (1, 10, 47562, 2, 2214) and float(row[5]) == 186.3 and row[6:8] == (0, 2)
+            assert row[8] is None and row[9] is None and row[10] == "181.2"
+            matched = c.execute("select count(*) filter (where player_id is not null), count(*) from public.app_contest_ownership where contest_id = %s", (cid,)).fetchone()
+            assert matched == (8, 9)                                     # players on the slate get our id; a stranger is kept by name
+            # the fee alone is not a result: every entry's winnings must be in (0 counts)
+            c.execute("select public.bsb_set_contest_money(%s, 3, 'NFL $3 Play-Action', %s::jsonb)", (cid, json.dumps({"9001": 12})))
+            assert c.execute("select name, paid, won, n_unsettled, profit from public.app_contests").fetchone() == ("NFL $3 Play-Action", 6, 12, 1, None)
+            c.execute("select public.bsb_set_contest_money(%s, null, null, %s::jsonb)", (cid, json.dumps({"9002": 0, "nobody": 50})))
+            assert c.execute("select paid, won, n_unsettled, profit from public.app_contests").fetchone() == (6, 12, 0, 6)
+            with pytest.raises(psycopg.errors.RaiseException, match="out of range"):
+                c.execute("select public.bsb_set_contest_money(%s, -1)", (cid,))
+            # the same contest again (a later export): numbers replaced, the dollars already typed in kept, a withdrawn entry dropped
+            again = {**file, "n_entries": 47570, "entries": [{**file["entries"][0], "rank": 2200}]}
+            out = c.execute("select public.bsb_import_contest(null, %s::jsonb)", (json.dumps(again),)).fetchone()[0]
+            assert out["contest_id"] == cid
+            assert c.execute("select n_entries, n_mine, name, entry_fee, won from public.app_contests").fetchone() == (47570, 1, "NFL $3 Play-Action", 3, 12)
+            assert c.execute("select rank, winnings from public.app_contest_entries").fetchall() == [(2200, 12)]
+            for bad in ({**file, "contest_key": ""}, {**file, "entries": "x"}, {**file, "n_entries": 0}, {"contest_key": "k", "n_entries": 5}):
+                with pytest.raises(psycopg.errors.RaiseException):
+                    c.execute("select public.bsb_import_contest(null, %s::jsonb)", (json.dumps(bad),))
+            c.execute("select public.bsb_delete_contest(%s)", (cid,))
+            assert c.execute("select count(*) from public.app_contests").fetchone()[0] == 0
+            assert c.execute("select count(*) from public.app_contest_ownership").fetchone()[0] == 0
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("update bsb.dfs_slates set starts_at = %s where id = 1", (before,))
+            c.commit()
 
 
 def _stored_set(url: str, source: str, mode: str = "gpp", n: int = 2, entered: bool = False, archived: bool = False,
