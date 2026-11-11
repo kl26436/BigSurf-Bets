@@ -56,6 +56,7 @@ jobs:
         run: |
           pip install -e .
           bsb db migrate
+          bsb notify keys      # the key pair that signs pop-ups: made once, kept in the database
       - name: Deploy to Firebase Hosting
         if: github.event_name != 'pull_request' && env.FIREBASE_SERVICE_ACCOUNT != '' && env.FIREBASE_PROJECT_ID != ''
         uses: FirebaseExtended/action-hosting-deploy@v0

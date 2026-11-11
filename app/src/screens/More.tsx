@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { NotificationSettings } from "../components/Notifications";
 import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Stepper } from "../components/ui";
 import { DEMO, supabase, useDispatches, useFreeAgents, useJobs, useRoster, useSaveSettings, useScorecards, useSettings, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, bookName, kickoff, pct, pts, signed, usd } from "../lib/format";
@@ -245,11 +246,17 @@ export function SettingsScreen() {
         <Stepper label="Most to put on one bet" value={draft.max_stake_pct} onChange={(v) => set("max_stake_pct", v)} min={0.01} max={0.25} step={0.01} format={(v) => `${Math.round(v * 100)}% · ${usd(v * draft.balance_bets)}`} />
         <p className="small muted">Suggested stakes on the Bets tab come from these. A quarter of the Kelly stake is the usual choice: slower growth, far smaller swings.</p>
         <p className="eyebrow">Sportsbooks you can bet at</p>
-        <div className="chips" role="group" aria-label="Sportsbooks">
+        <div className="chips chips--wrap" role="group" aria-label="Sportsbooks">
           {BOOKS.map((b) => <button key={b} className="chip" aria-pressed={draft.books.includes(b)} onClick={() => set("books", draft.books.includes(b) ? draft.books.filter((x) => x !== b) : [...draft.books, b])}>{bookName(b)}</button>)}
         </div>
         <button className="btn btn--primary" disabled={save.isPending} onClick={() => save.mutate(draft, { onSuccess: () => say("Settings saved"), onError: () => say("Couldn't save settings — try again", true) })}>{save.isPending ? "Saving…" : "Save changes"}</button>
       </section>
+
+      <NotificationSettings draft={draft} save={(patch, done) => {
+        const next = { ...draft, ...patch };
+        setDraft(next);
+        save.mutate(next, { onSuccess: () => say(done), onError: () => say("Couldn't save that — try again", true) });
+      }} />
 
       <section className="card card--pad stack stack--tight" aria-label="DraftKings salaries">
         <h2 className="h2">DraftKings salaries</h2>

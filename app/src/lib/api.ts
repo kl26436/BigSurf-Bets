@@ -5,9 +5,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import * as demo from "./demo";
 import {
-  DEFAULT_SETTINGS, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
-  type WaiverRec, type WaiverRun,
+  type PushDevice, type SentNote, type WaiverRec, type WaiverRun,
 } from "./types";
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -28,7 +28,7 @@ function num<T>(rows: T[]): T[] {
   return rows;
 }
 
-const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description"]);
+const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description", "title", "body", "target", "device"]);
 
 /** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
 async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
@@ -110,6 +110,17 @@ export const usePropEdges = () =>
   useQuery({ queryKey: ["props"], staleTime: MIN, queryFn: () => (DEMO ? demo.props : all<PropEdge>("app_prop_edges")) });
 export const useBets = () =>
   useQuery({ queryKey: ["bets"], queryFn: () => (DEMO ? demo.listBets() : all<Bet>("app_bets", (q) => q.order("placed_at", { ascending: false }))) });
+/** What changed lately, newest first. */
+export const useEvents = () =>
+  useQuery({ queryKey: ["events"], refetchInterval: 5 * MIN,
+    queryFn: () => (DEMO ? demo.events : all<AppEvent>("app_events", (q) => q.order("created_at", { ascending: false }), 40)) });
+export const usePushDevices = () =>
+  useQuery({ queryKey: ["push-devices"], queryFn: () => (DEMO ? demo.listDevices() : all<PushDevice>("app_push_devices", (q) => q.order("created_at", { ascending: false }))) });
+export const useSentNotes = () =>
+  useQuery({ queryKey: ["sent-notes"], queryFn: () => (DEMO ? Promise.resolve([] as SentNote[]) : all<SentNote>("app_notifications", (q) => q.order("at", { ascending: false }), 8)) });
+/** The public half of the key pop-ups are signed with (null: not made yet). */
+export const usePushKey = () =>
+  useQuery({ queryKey: ["push-key"], staleTime: Infinity, queryFn: () => (DEMO ? Promise.resolve(null as string | null) : rpc<string | null>("bsb_push_key")) });
 export const useScorecards = () =>
   useQuery({ queryKey: ["scorecards"], queryFn: () => (DEMO ? demo.scorecards : all<Scorecard>("app_scorecards", (q) => q.order("season", { ascending: false }).order("week", { ascending: false }))) });
 export const useRoster = () =>
@@ -180,6 +191,14 @@ export const useDeleteBet = () =>
 /** Settle open bets from final scores → how many were settled */
 export const useGradeBets = () =>
   useWrite((_: void) => (DEMO ? demo.gradeBets() : rpc<number>("bsb_grade_bets")), ["bets"]);
+/** Sign a device up for pop-ups (the browser's subscription, plus a label for the list). */
+export const useSavePush = () =>
+  useWrite((a: { sub: { endpoint: string; keys: { p256dh: string; auth: string }; device: string } }) =>
+    DEMO ? demo.saveDevice(a.sub.device) : rpc("bsb_save_push_subscription", { p: a.sub }), ["push-devices"]);
+/** Forget a device: this one by its address, or any of yours by the id in the list. */
+export const useDeletePush = () =>
+  useWrite((a: { endpoint?: string; id?: string }) =>
+    DEMO ? demo.deleteDevice() : rpc<number>("bsb_delete_push_subscription", { p_endpoint: a.endpoint ?? null, p_id: a.id ?? null }), ["push-devices"]);
 export const useRenameSet = () =>
   useWrite((a: { set_id: number; label: string | null }) =>
     DEMO ? demo.renameSet(a.set_id, a.label) : rpc("bsb_rename_set", { p_set_id: a.set_id, p_label: a.label }), ["sets", "set"]);
@@ -205,9 +224,10 @@ const CHANGES: Record<string, string[]> = {
   build_lineups: ["sets", "set"],
   import_slate: ["slates", "pool", "sets", "health"],
   project: ["pool", "projections", "sets", "set", "props", "roster", "free-agents", "health"],
-  refresh_status: ["pool", "projections", "health"],
+  refresh_status: ["pool", "projections", "health", "events"],
   refresh_odds: ["quotes", "props", "games", "health"],
   refresh_stats: ["health"],
+  notify_test: ["sent-notes", "push-devices", "push-key"],
 };
 /** Call once, in the shell. */
 export function useJobEffects() {

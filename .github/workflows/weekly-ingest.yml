@@ -43,6 +43,11 @@ concurrency:
 
 env:
   SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+  # the account alerts are e-mailed from (optional: without it, pop-ups still go out)
+  SMTP_USER: ${{ secrets.SMTP_USER }}
+  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+  SMTP_HOST: ${{ vars.SMTP_HOST }}
+  SMTP_PORT: ${{ vars.SMTP_PORT }}
   ODDSPAPI_API_KEY: ${{ secrets.ODDSPAPI_API_KEY }}
   ODDSLINK_API_KEY: ${{ secrets.ODDSLINK_API_KEY }}
   SLEEPER_LEAGUE_ID: ${{ vars.SLEEPER_LEAGUE_ID }}
@@ -111,6 +116,12 @@ jobs:
       - name: Odds — OddsLink
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
         run: bsb odds oddslink --min-gap "${{ steps.plan.outputs.gap_other }}"
+
+      # a player in an entered lineup ruled out → pop-up and e-mail; every change → the app's "What changed"
+      - name: What changed
+        if: always()
+        continue-on-error: true
+        run: bsb notify run
 
       - name: Feed health
         if: always()
