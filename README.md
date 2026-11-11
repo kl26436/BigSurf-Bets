@@ -183,7 +183,7 @@ Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow 
 ## Schema (`bsb.*`)
 
 - `teams`, `players`, `games` — reference + schedule (games carries nflverse closing lines for backtests)
-- `player_week_stats` — one row per player-week; DK + PPR points precomputed; all 150 nflverse columns in `raw`
+- `player_week_stats` — one row per player-week; DK + PPR points precomputed
 - `injury_reports` (official weekly) and `player_status_snapshots` (Sleeper, append-only)
 - `odds_snapshots` (append-only, every book/market/outcome) + `odds_latest` view
 - `dfs_slates`, `dfs_salaries` — DraftKings contests
