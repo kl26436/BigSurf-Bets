@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Empty, Loading, PosTag, Sheet, StatusPill } from "../components/ui";
+import { Empty, Icon, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
 import { usePool, useSaveLineup } from "../lib/api";
 import { kickoff, pts, slateTitle, usd } from "../lib/format";
-import { SLOTS, SLOT_LABEL, addPlayer, arrangeForLateSwap, canFill, check, removeAt, toDkCsv, value, type Lineup } from "../lib/lineup";
+import { SLOTS, SLOT_LABEL, addPlayer, arrangeForLateSwap, check, handKey, pickerChoices, removeAt, toDkCsv, value, type Lineup, type PickSort } from "../lib/lineup";
+import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
 import type { PoolPlayer } from "../lib/types";
@@ -16,13 +17,19 @@ export function download(name: string, text: string) {
   URL.revokeObjectURL(a.href);
 }
 
+const PICK_SORTS: Record<PickSort, string> = { points: "Points", value: "Value", cheapest: "Cheapest" };
+
 export function Builder() {
   const { slate, isLoading } = useCurrentSlate();
   const pool = usePool(slate?.id);
   const save = useSaveLineup();
-  const { hand, setHand, say } = useStore();
-  const [picking, setPicking] = useState<number | null>(null);
+  const { hand, setHand, savedHand, setSavedHand, say } = useStore();
+  const [picking, openPicker, closePicker] = useSheet<number>("pick");
   const [text, setText] = useState("");
+  const [sort, setSort] = useState<PickSort>("points");
+  const [fits, setFits] = useState(true);
+  const [name, setName] = useState("");
+  useTitle("Build a lineup");
 
   const byId = useMemo(() => new Map((pool.data ?? []).map((p) => [p.dk_id, p])), [pool.data]);
   const lineup: Lineup = useMemo(() => hand.map((id) => (id ? byId.get(id) ?? null : null)), [hand, byId]);
@@ -33,25 +40,42 @@ export function Builder() {
   if (!slate) return <Empty title="No DraftKings games loaded" why="A lineup needs this week's salaries." how={<Link className="accent" to="/more/settings">Add a salary file</Link>} />;
 
   const slot = picking == null ? null : SLOTS[picking];
-  const taken = new Set(hand.filter(Boolean));
-  const choices = slot == null ? [] : (pool.data ?? [])
-    .filter((p) => p.dk_mean != null && canFill(slot, p.pos) && !taken.has(p.dk_id) && (!text || p.name.toLowerCase().includes(text.toLowerCase())))
-    .sort((a, b) => (b.dk_mean ?? 0) - (a.dk_mean ?? 0)).slice(0, 80);
+  const taken = new Set(hand.filter((id): id is string => !!id));
+  // everyone who can fill the slot, then the ones the budget allows: the whole list, never a top-N
+  const everyone = slot == null ? [] : pickerChoices(pool.data ?? [], slot, taken, { text, sort });
+  const choices = fits ? everyone.filter((p) => p.salary <= c.left) : everyone;
+  // the same nine as the last save: saving again would only make a duplicate
+  const saved = c.complete && savedHand?.key === handKey(hand) ? savedHand : null;
+  const budget = `${usd(c.left)} left${c.perOpenSpot != null ? ` · ${usd(c.perOpenSpot)} per open spot` : ""}`;
 
-  function choose(p: PoolPlayer) {
-    const next = lineup.slice();
-    if (picking != null && next[picking] === null) next[picking] = p;
-    else { const res = addPlayer(lineup, p); if (res.error) return say(res.error, true); return setLineup(res.lineup); }
-    setLineup(next);
-    setPicking(null);
+  function closePick() {
     setText("");
+    closePicker();
+  }
+  function choose(p: PoolPlayer) {
+    if (picking != null && lineup[picking] === null) {
+      const next = lineup.slice();
+      next[picking] = p;
+      setLineup(next);
+    } else {
+      const res = addPlayer(lineup, p);
+      if (res.error) return say(res.error, true);
+      setLineup(res.lineup);
+    }
+    closePick();
   }
   function finish(kind: "save" | "file") {
     const ready = arrangeForLateSwap(lineup);
     const ids = ready.map((p) => p!.dk_id);
     if (kind === "file") return download(`bigsurf-lineup-week${slate!.week}.csv`, toDkCsv([ids]));
-    save.mutate({ slate_id: slate!.id, players: ids }, {
-      onSuccess: () => { setLineup(ready); say("Lineup saved"); },
+    const label = name.trim();
+    save.mutate({ slate_id: slate!.id, players: ids, label: label || undefined }, {
+      onSuccess: (setId) => {
+        setLineup(ready);
+        setSavedHand({ key: handKey(ids), setId: Number(setId), label: label || null });
+        setName("");
+        say("Lineup saved");
+      },
       onError: (e) => say(`Couldn't save the lineup — ${e.message}`, true),
     });
   }
@@ -76,36 +100,42 @@ export function Builder() {
         {SLOTS.map((s, i) => {
           const p = lineup[i];
           return (
-            <div className="prow" key={i}>
+            <div className="prow prow--pick" key={i}>
               <span className="tag">{SLOT_LABEL[s]}</span>
               {p ? (
                 <>
                   <div className="grow">
-                    <p className="pname ellipsis">{p.name} <StatusPill status={p.dk_status} /></p>
+                    <PlayerName name={p.name} status={p.dk_status} />
                     <p className="pmeta ellipsis">{p.team} vs {p.opponent} · {kickoff(p.kickoff_at)}</p>
                   </div>
-                  <div className="inline">
-                    <p className="pnum num">{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
-                    <button className="btn btn--sm btn--quiet" onClick={() => setLineup(removeAt(lineup, i))} aria-label={`Remove ${p.name}`}>Remove</button>
-                  </div>
+                  <p className="pnum num">{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
+                  <button className="iconbtn" onClick={() => setLineup(removeAt(lineup, i))} aria-label={`Remove ${p.name}`}><Icon name="x" /></button>
                 </>
               ) : (
-                <>
-                  <button className="grow" onClick={() => setPicking(i)}>
-                    <p className="add">Add player</p>
-                    <p className="pmeta">{s === "FLEX" ? "Any position · tap to choose" : "Tap to choose"}</p>
-                  </button>
-                  <span />
-                </>
+                <button className="grow prow__open" onClick={() => openPicker(i)}>
+                  <p className="add">Add player</p>
+                  <p className="pmeta">{s === "FLEX" ? "Any position · tap to choose" : "Tap to choose"}</p>
+                </button>
               )}
             </div>
           );
         })}
       </section>
+      {!saved && (
+        <label className="field"><span>Name</span>
+          <input className="input" type="text" maxLength={60} placeholder="Optional — to tell this lineup from the others" value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+      )}
       <div className="sticky-cta">
-        <button className="btn btn--cta" disabled={!c.complete || save.isPending} onClick={() => finish("save")}>
-          {save.isPending ? "Saving…" : c.complete ? "Save lineup" : c.filled === 9 ? "Fix the lineup to save" : `${9 - c.filled} more to pick`}
-        </button>
+        {/* the budget follows the scroll with the button: it is what every pick is checked against */}
+        <p className={`small num sticky-cta__note ${c.left < 0 ? "bad" : "muted"}`} role="status">{budget} · {pts(c.expected)} expected</p>
+        {saved ? (
+          <Link className="btn btn--cta" to={`/lineups/${saved.setId}`}>Saved — open it</Link>
+        ) : (
+          <button className="btn btn--cta" disabled={!c.complete || save.isPending} onClick={() => finish("save")}>
+            {save.isPending ? "Saving…" : c.complete ? "Save lineup" : c.filled === 9 ? "Fix the lineup to save" : `${9 - c.filled} more to pick`}
+          </button>
+        )}
       </div>
       <div className="inline">
         <button className="btn grow" disabled={!c.complete} onClick={() => finish("file")}>Download for DraftKings</button>
@@ -113,21 +143,29 @@ export function Builder() {
       </div>
 
       {slot != null && (
-        <Sheet title={slot === "FLEX" ? "Choose a player — any position" : `Choose a ${SLOT_LABEL[slot]}`} onClose={() => { setPicking(null); setText(""); }}>
+        <Sheet title={slot === "FLEX" ? "Choose a player — any position" : `Choose a ${SLOT_LABEL[slot]}`} onClose={closePick}>
           <div className="stack stack--tight">
-            <input className="input" type="search" placeholder="Search" aria-label="Search players" value={text} onChange={(e) => setText(e.target.value)} />
+            <p className={`small num ${c.left < 0 ? "bad" : "muted"}`}>{budget}</p>
+            <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setText(e.target.value)} />
+            <div className="chips" role="group" aria-label="Sort by">
+              {(Object.keys(PICK_SORTS) as PickSort[]).map((k) => (
+                <button key={k} className="chip" aria-pressed={sort === k} onClick={() => setSort(k)}>{PICK_SORTS[k]}</button>
+              ))}
+            </div>
+            <label className="check"><input type="checkbox" checked={fits} onChange={(e) => setFits(e.target.checked)} />Only players I can afford</label>
+            <p className="small muted">{fits && choices.length < everyone.length ? `${choices.length} of ${everyone.length} fit the budget left` : `${everyone.length} to choose from`}</p>
             <div>
               {choices.map((p) => (
                 <button className="prow" key={p.dk_id} onClick={() => choose(p)}>
                   <PosTag pos={p.pos} />
                   <div className="grow">
-                    <p className="pname ellipsis">{p.name} <StatusPill status={p.dk_status} /></p>
+                    <PlayerName name={p.name} status={p.dk_status} />
                     <p className="pmeta ellipsis">{p.team} vs {p.opponent} · {pts(value(p), 2)} per $1k</p>
                   </div>
                   <p className={`pnum num ${p.salary > c.left ? "bad" : ""}`}>{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
                 </button>
               ))}
-              {choices.length === 0 && <p className="muted small">Nobody matches.</p>}
+              {choices.length === 0 && <p className="muted small">{everyone.length > 0 ? "Nobody here fits the budget left. Untick the box to see everyone." : "Nobody matches."}</p>}
             </div>
           </div>
         </Sheet>

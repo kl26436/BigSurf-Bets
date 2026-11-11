@@ -204,3 +204,24 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
 button.spread { width: 100%; min-height: var(--size-tapMin); }
 .title + .inline, .title + .chips, .title + p { margin-top: calc(var(--space-2) * -1); }
 .main > .stack > div > .inline, .main > .stack > div > p + .inline { margin-top: var(--space-3); }
+
+/* ---- back, player names, small additions ------------------------------------ */
+/* "Back to …": in the phone header (always in reach), above the page on a laptop */
+.back { display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--size-tapMin); min-width: var(--size-tapMin);
+  padding-right: var(--space-3); margin-left: calc(var(--space-2) * -1); color: var(--semantic-accent-default);
+  font-weight: var(--typography-weight-semibold); font-size: var(--typography-size-md); }
+.back svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.back-row { display: none; }
+@media (min-width: 960px) { .back-row { display: block; margin-bottom: var(--space-3); } }
+
+/* a name gives way with "…"; what follows it (the injury tag) keeps its full width */
+.pname { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.pname__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pname > .pill { flex: none; justify-content: center; min-width: var(--size-icon-xs); padding: var(--space-0-5) var(--space-1); }
+.btn--quiet.bad { color: var(--semantic-status-danger); }
+/* the confirming button of something that cannot be undone */
+.btn--cta-danger { background: var(--semantic-status-danger); color: var(--semantic-text-onAccent); }
+/* hand builder rows: tag · name · numbers · remove; an open spot spans the row */
+.prow--pick { grid-template-columns: 44px minmax(0, 1fr) auto var(--size-tapMin); }
+.prow__open { grid-column: 2 / -1; }
+.sticky-cta__note { padding-bottom: var(--space-2); text-align: center; }

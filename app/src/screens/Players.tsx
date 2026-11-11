@@ -1,15 +1,18 @@
 import { useMemo, useState } from "react";
-import { Empty, ErrorNote, Fresh, Icon, Loading, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
+import { Empty, ErrorNote, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
 import { POS_LABEL, addPlayer, value, type Lineup } from "../lib/lineup";
+import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
-import { useStore } from "../lib/store";
+import { useStore, type PlayerSort } from "../lib/store";
 import type { PoolPlayer, Pos } from "../lib/types";
 
 const POSITIONS: (Pos | "ALL")[] = ["ALL", "QB", "RB", "WR", "TE", "DST"];
-const SORTS = { points: "Expected points", value: "Points per $1,000", salary: "Price" } as const;
-type Sort = keyof typeof SORTS;
+const SORTS: Record<PlayerSort, string> = { points: "Expected points", value: "Points per $1,000", salary: "Price" };
+type Sort = PlayerSort;
+/** One id for a row whether or not DraftKings games are loaded. */
+const rowId = (p: PoolPlayer) => p.dk_id ?? p.player_id ?? p.name;
 
 export function sortPlayers(rows: PoolPlayer[], sort: Sort): PoolPlayer[] {
   const key = (p: PoolPlayer) => (sort === "points" ? p.dk_mean ?? -1 : sort === "value" ? value(p) ?? -1 : p.salary);
@@ -20,11 +23,10 @@ export function Players() {
   const { slate, isLoading } = useCurrentSlate();
   const pool = usePool(slate?.id);
   const all = useProjections(!isLoading && !slate);          // no DraftKings games loaded: show every projected player
-  const [pos, setPos] = useState<Pos | "ALL">("ALL");
-  const [sort, setSort] = useState<Sort>("points");
-  const [text, setText] = useState("");
-  const [open, setOpen] = useState<PoolPlayer | null>(null);
-  const { marks, setMark } = useStore();
+  // search, position and sort live in the store: leaving the screen and coming back keeps them
+  const { marks, setMark, playersView: { pos, sort, text }, setPlayersView } = useStore();
+  const [openId, openPlayer, closePlayer] = useSheet<string>("player");
+  useTitle("Players");
 
   const source = slate ? pool : all;
   const rows = useMemo(() => {
@@ -34,6 +36,7 @@ export function Players() {
     return sortPlayers(playable, slate ? sort : "points");
   }, [source.data, pos, sort, text, slate]);
   const max = useMemo(() => Math.max(30, ...(source.data ?? []).map((p) => p.dk_p90 ?? 0)), [source.data]);
+  const open = openId == null ? null : (source.data ?? []).find((p) => rowId(p) === openId) ?? null;
 
   if (isLoading || source.isLoading) return <Loading />;
   if (source.error) return <ErrorNote error={source.error} />;
@@ -45,15 +48,15 @@ export function Players() {
         <p className="eyebrow">{slate ? `DraftKings · ${slate.n_games} games` : "All games this week"}</p>
         <h1 className="title">Players</h1>
       </div>
-      <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setText(e.target.value)} />
+      <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setPlayersView({ text: e.target.value })} />
       <div className="chips" role="group" aria-label="Position">
         {POSITIONS.map((p) => (
-          <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPos(p)}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
+          <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPlayersView({ pos: p })}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
         ))}
       </div>
       {slate && (
         <label className="field"><span>Sort by</span>
-          <select className="input" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+          <select className="input" value={sort} onChange={(e) => setPlayersView({ sort: e.target.value as Sort })}>
             {Object.entries(SORTS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
           </select>
         </label>
@@ -63,11 +66,11 @@ export function Players() {
         <Empty title="No players match" why="Players who are out, or haven't played this season, don't get expected points." how="Clear the search or pick another position." />
       ) : (
         <div className="card">
-          {rows.slice(0, 250).map((p) => (
-            <div className="prow prow--5" key={p.dk_id ?? p.player_id}>
+          {rows.map((p) => (
+            <div className="prow prow--5" key={rowId(p)}>
               <PosTag pos={p.pos} />
-              <button className="grow" onClick={() => setOpen(p)} aria-label={`${p.name} details`}>
-                <p className="pname ellipsis">{p.name} <StatusPill status={p.dk_status ?? p.injury_status} /></p>
+              <button className="grow" onClick={() => openPlayer(rowId(p))} aria-label={`${p.name} details`}>
+                <PlayerName name={p.name} status={p.dk_status ?? p.injury_status} />
                 <p className="pmeta ellipsis">{p.team} vs {p.opponent}{slate ? ` · ${usd(p.salary)}` : ""}{p.override_dk_mean != null ? " · your number" : ""}</p>
               </button>
               <div className="rangecell"><RangeBar p10={p.dk_p10} p25={p.dk_p25} p50={p.dk_p50} p75={p.dk_p75} p90={p.dk_p90} max={max} /></div>
@@ -82,7 +85,7 @@ export function Players() {
           ))}
         </div>
       )}
-      {open && <PlayerSheet p={open} week={slate ? { season: slate.season, week: slate.week } : null} max={max} onClose={() => setOpen(null)} />}
+      {open && <PlayerSheet p={open} week={slate ? { season: slate.season, week: slate.week } : null} max={max} onClose={closePlayer} />}
     </div>
   );
 }

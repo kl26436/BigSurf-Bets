@@ -2,7 +2,7 @@
 // views, writes go through the bsb_* functions; the database checks who is asking.
 import { createClient, type Session } from "@supabase/supabase-js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as demo from "./demo";
 import {
   DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
@@ -80,15 +80,16 @@ export const useProjections = (enabled = true) =>
     queryFn: () => (DEMO ? demo.pool : all<PoolPlayer>("app_projections", (q) => q.order("dk_mean", { ascending: false }))) });
 export const useSets = (slateId: number | undefined) =>
   useQuery({ queryKey: ["sets", slateId], enabled: slateId != null, refetchInterval: MIN,
-    queryFn: () => (DEMO ? demo.sets : all<LineupSet>("app_lineup_sets", (q) => q.eq("slate_id", slateId).order("created_at", { ascending: false }))) });
+    queryFn: () => (DEMO ? demo.listSets() : all<LineupSet>("app_lineup_sets", (q) => q.eq("slate_id", slateId).order("created_at", { ascending: false }))) });
 export const useSet = (setId: number | undefined) =>
   useQuery({ queryKey: ["set", setId], enabled: setId != null, queryFn: async () => {
     if (DEMO) return demo.setDetail(setId!);
-    const [lineups, players] = await Promise.all([
+    const [sets, lineups, players] = await Promise.all([
+      all<LineupSet>("app_lineup_sets", (q) => q.eq("id", setId)),
       all<LineupRow>("app_lineups", (q) => q.eq("set_id", setId).order("lineup_no")),
       all<LineupPlayer>("app_lineup_players", (q) => q.eq("set_id", setId).order("lineup_no").order("slot_no")),
     ]);
-    return { lineups, players };
+    return { set: sets[0] ?? null, lineups, players };
   } });
 export const useQuotes = () =>
   useQuery({ queryKey: ["quotes"], staleTime: MIN, queryFn: () => (DEMO ? demo.quotes : all<LineQuote>("app_line_quotes")) });
@@ -133,10 +134,49 @@ export const useSetOverride = () =>
     ["pool", "projections"]);
 export const useSaveLineup = () =>
   useWrite((a: { slate_id: number; players: string[]; label?: string }) =>
-    DEMO ? Promise.resolve(0) : rpc<number>("bsb_save_lineup", { p_slate_id: a.slate_id, p_players: a.players, p_label: a.label ?? null }), ["sets"]);
+    DEMO ? demo.saveLineup(a.players, a.label) : rpc<number>("bsb_save_lineup", { p_slate_id: a.slate_id, p_players: a.players, p_label: a.label ?? null }), ["sets"]);
 export const useSetEntered = () =>
   useWrite((a: { set_id: number; entered: boolean }) =>
-    DEMO ? demo.setEntered(a.set_id, a.entered) : rpc("bsb_set_entered", { p_set_id: a.set_id, p_entered: a.entered }), ["sets"]);
+    DEMO ? demo.setEntered(a.set_id, a.entered) : rpc("bsb_set_entered", { p_set_id: a.set_id, p_entered: a.entered }), ["sets", "set"]);
+export const useRenameSet = () =>
+  useWrite((a: { set_id: number; label: string | null }) =>
+    DEMO ? demo.renameSet(a.set_id, a.label) : rpc("bsb_rename_set", { p_set_id: a.set_id, p_label: a.label }), ["sets", "set"]);
+export const useArchiveSet = () =>
+  useWrite((a: { set_id: number; archived: boolean }) =>
+    DEMO ? demo.archiveSet(a.set_id, a.archived) : rpc("bsb_archive_set", { p_set_id: a.set_id, p_archived: a.archived }), ["sets", "set"]);
+export const useDeleteSet = () =>
+  useWrite((a: { set_id: number }) => (DEMO ? demo.deleteSet(a.set_id) : rpc("bsb_delete_set", { p_set_id: a.set_id })), ["sets"]);
+/** → lineups left in the set (0: the set went with its last lineup) */
+export const useDeleteLineup = () =>
+  useWrite((a: { set_id: number; lineup_no: number }) =>
+    DEMO ? demo.deleteLineup(a.set_id, a.lineup_no) : rpc<number>("bsb_delete_lineup", { p_set_id: a.set_id, p_lineup_no: a.lineup_no }), ["sets", "set"]);
+export const useDismissJob = () =>
+  useWrite((a: { job_id: number }) => (DEMO ? demo.dismissJob(a.job_id) : rpc("bsb_dismiss_job", { p_job_id: a.job_id })), ["jobs"]);
 export const useSaveSettings = () =>
   useWrite((s: Settings) => (DEMO ? demo.saveSettings(s) : rpc("bsb_save_settings", { p_settings: s })), ["settings"]);
 export const useClaim = () => useWrite((_: void) => rpc<string>("bsb_claim_owner"), ["whoami"]);
+
+// ---- when a request finishes ----------------------------------------------------
+// What a finished job changed. The screens that show it would otherwise wait for
+// their own timer: a build would read "done" a minute before its lineups appeared.
+const CHANGES: Record<string, string[]> = {
+  build_lineups: ["sets", "set"],
+  import_slate: ["slates", "pool", "sets", "health"],
+  project: ["pool", "projections", "sets", "set", "props", "roster", "free-agents", "health"],
+  refresh_status: ["pool", "projections", "health"],
+  refresh_odds: ["quotes", "props", "games", "health"],
+  refresh_stats: ["health"],
+};
+/** Call once, in the shell. */
+export function useJobEffects() {
+  const jobs = useJobs();
+  const qc = useQueryClient();
+  const seen = useRef(new Map<number, string>());
+  useEffect(() => {
+    for (const j of jobs.data ?? []) {
+      const before = seen.current.get(j.id);
+      if (before && before !== "done" && j.status === "done") (CHANGES[j.kind] ?? []).forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+      seen.current.set(j.id, j.status);
+    }
+  }, [jobs.data, qc]);
+}

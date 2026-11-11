@@ -1,5 +1,5 @@
 // DraftKings classic rules, shared by the hand builder and every lineup view.
-import type { PoolPlayer, Pos } from "./types";
+import type { Job, LineupSet, PoolPlayer, Pos } from "./types";
 
 export const SLOTS = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"] as const;
 export type Slot = (typeof SLOTS)[number];
@@ -106,4 +106,100 @@ export function exposure<T extends { dk_id: string; lineup_no: number }>(rows: T
 /** Expected points per $1,000 of budget — the usual way to compare prices. */
 export function value(p: Pick<PoolPlayer, "dk_mean" | "salary">): number | null {
   return p.dk_mean != null && p.salary > 0 ? (p.dk_mean / p.salary) * 1000 : null;
+}
+
+// ---- lineup sets ---------------------------------------------------------------
+
+/** What the Lineups screen shows: the newest automatic set of each kind, every
+ *  set the user asked for or built, and anything entered; archived sets apart.
+ *  The weekly results grade the same sets (model/scorecard.py). `all` is newest first. */
+export function visibleSets(all: LineupSet[]): { auto: LineupSet[]; mine: LineupSet[]; archived: LineupSet[] } {
+  const active = all.filter((s) => !s.archived_at);
+  const auto = ["gpp", "cash"].map((m) => active.find((s) => s.source === "auto" && s.mode === m)).filter((s): s is LineupSet => !!s);
+  const mine = active.filter((s) => s.source !== "auto" || (s.entered && !auto.includes(s)));
+  return { auto, mine, archived: all.filter((s) => !!s.archived_at) };
+}
+
+interface BuildRules { qb_stack?: number; bring_back?: number; lock?: string[]; exclude?: string[]; max_per_team?: number; min_salary?: number }
+interface BuildSettings { n?: number; mode?: string; max_exposure?: number; min_unique?: number; rules?: BuildRules }
+
+/** The settings a set was built with, in the words of the Build sheet: what tells two sets apart. */
+export function describeSettings(set: Pick<LineupSet, "settings" | "n_lineups" | "source">): string[] {
+  if (set.source === "manual") return [];
+  const s = (set.settings ?? {}) as BuildSettings;
+  const r = s.rules ?? {};
+  const out: string[] = [];
+  if (set.n_lineups > 1 && s.max_exposure != null) out.push(`A player in at most ${Math.round(s.max_exposure * 100)}%`);
+  if (set.n_lineups > 1 && s.min_unique != null) out.push(`${s.min_unique} ${s.min_unique === 1 ? "player differs" : "players differ"}`);
+  if ((r.qb_stack ?? 0) > 0) out.push(r.qb_stack === 1 ? "QB with a receiver" : `QB with ${r.qb_stack} receivers`);
+  if ((r.bring_back ?? 0) > 0) out.push(r.bring_back === 1 ? "plus an opponent" : `plus ${r.bring_back} opponents`);
+  if (r.lock?.length) out.push(`${r.lock.length} locked in`);
+  if (r.exclude?.length) out.push(`${r.exclude.length} left out`);
+  return out;
+}
+
+/** The request that would build this set again from today's numbers. */
+export function rebuildPayload(set: LineupSet): Record<string, unknown> {
+  const s = (set.settings ?? {}) as BuildSettings;
+  const r = s.rules ?? {};
+  const out: Record<string, unknown> = { slate_id: set.slate_id, mode: set.mode, n: s.n ?? set.n_lineups, lock: r.lock ?? [], exclude: r.exclude ?? [] };
+  if (s.max_exposure != null) out.max_exposure = s.max_exposure;
+  if (s.min_unique != null) out.min_unique = s.min_unique;
+  if (r.qb_stack != null) out.qb_stack = r.qb_stack;
+  if (r.bring_back != null) out.bring_back = r.bring_back;
+  if (r.max_per_team != null) out.max_per_team = r.max_per_team;
+  if (r.min_salary != null) out.min_salary = r.min_salary;
+  if (set.label) out.label = set.label;
+  return out;
+}
+
+// ---- the hand builder's picker ------------------------------------------------
+export type PickSort = "points" | "value" | "cheapest";
+
+/** Everyone who can fill a slot — the whole list, never a top-N: the cheap end of
+ *  the pool is where a lineup gets finished. */
+export function pickerChoices(pool: PoolPlayer[], slot: Slot, taken: Set<string>,
+  opts: { text?: string; sort?: PickSort; fitsOnly?: boolean; left?: number } = {}): PoolPlayer[] {
+  const needle = (opts.text ?? "").trim().toLowerCase();
+  const rows = pool.filter((p) => p.dk_mean != null && canFill(slot, p.pos) && !taken.has(p.dk_id)
+    && (!needle || p.name.toLowerCase().includes(needle) || p.team.toLowerCase() === needle)
+    && (!opts.fitsOnly || opts.left == null || p.salary <= opts.left));
+  const by: Record<PickSort, (a: PoolPlayer, b: PoolPlayer) => number> = {
+    points: (a, b) => (b.dk_mean ?? 0) - (a.dk_mean ?? 0),
+    value: (a, b) => (value(b) ?? 0) - (value(a) ?? 0),
+    cheapest: (a, b) => a.salary - b.salary || (b.dk_mean ?? 0) - (a.dk_mean ?? 0),
+  };
+  return rows.sort(by[opts.sort ?? "points"]);
+}
+
+/** Identity of a nine-player lineup regardless of slot order. */
+export function handKey(ids: (string | null)[]): string {
+  return ids.filter(Boolean).slice().sort().join(",");
+}
+
+// ---- build requests on the Lineups screen ---------------------------------------
+
+export interface BuildCard { job: Job; state: "working" | "ready" | "failed"; setId?: number; why?: string }
+const READY_FOR = 15 * 60_000;      // a finished build is announced for this long
+const OVERDUE = 20 * 60_000;        // a build that has said nothing for this long is not coming
+
+/** The build requests worth showing: under way, just finished (with the set to
+ *  open), or failed. Dismissed ones are gone; a finished one drops off by itself. */
+export function buildCards(jobs: Job[], sets: LineupSet[], now = Date.now()): BuildCard[] {
+  const out: BuildCard[] = [];
+  for (const job of jobs) {
+    if (job.kind !== "build_lineups" || job.dismissed_at) continue;
+    if (job.status === "done") {
+      const setId = Number((job.result as { set_id?: unknown } | null)?.set_id);
+      const recent = job.finished_at != null && now - Date.parse(job.finished_at) < READY_FOR;
+      if (recent && sets.some((s) => s.id === setId && !s.archived_at)) out.push({ job, state: "ready", setId });
+    } else if (job.status === "failed" || job.status === "needs_setup") {
+      out.push({ job, state: "failed", why: job.error ?? undefined });
+    } else if (now - Date.parse(job.created_at) > OVERDUE) {
+      out.push({ job, state: "failed", why: "This build never reported back. Start it again." });
+    } else {
+      out.push({ job, state: "working" });
+    }
+  }
+  return out.slice(0, 3);
 }

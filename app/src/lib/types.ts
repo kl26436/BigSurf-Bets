@@ -88,6 +88,7 @@ export interface LineupSet {
   settings: Record<string, unknown> | null;
   summary: Record<string, unknown> | null;
   on_latest_projections: boolean;
+  archived_at: string | null;   // hidden from the Lineups screen, kept for results
 }
 
 export interface LineupRow {
@@ -169,6 +170,7 @@ export interface Job {
   finished_at: string | null;
   result: Record<string, unknown> | null;
   error: string | null;
+  dismissed_at: string | null;
 }
 
 export interface RosterPlayer {
@@ -192,7 +194,9 @@ export interface Scorecard {
   created_at: string;
   metrics: {
     projections?: { n_played: number; did_not_play: number; by_position: Record<string, { n: number; mae: number; bias: number; rank_corr: number | null; cover_p10_p90: number; vs_dk_avg?: { n: number; mae_model: number; mae_dk_avg: number } }> };
-    lineups?: { set_id: number; mode: string; n: number; n_complete: number; avg_actual: number; best_actual: number; avg_projected: number; in_p10_p90: number }[];
+    // label / source / entered arrive with scorecards graded after November 2026; a lineup built by hand has no range
+    lineups?: { set_id: number; mode: string; n: number; n_complete: number; avg_actual: number; best_actual: number; avg_projected: number | null;
+      in_p10_p90: number | null; label?: string | null; source?: string; entered?: boolean }[];
     props?: { n: number; vs_pinnacle?: { n: number; logloss_model: number; logloss_pinnacle: number }; model_edges?: { n: number; wins: number; units: number; roi: number } };
   };
 }

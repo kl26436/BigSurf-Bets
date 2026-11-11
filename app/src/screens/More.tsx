@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Empty, ErrorNote, Loading, PosTag, StatusPill, Stepper } from "../components/ui";
+import { Empty, ErrorNote, Loading, PlayerName, PosTag, Stepper } from "../components/ui";
 import { DEMO, supabase, useDispatches, useFreeAgents, useJobs, useRoster, useSaveSettings, useScorecards, useSettings, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, bookName, kickoff, pct, pts, signed, usd } from "../lib/format";
+import { useTitle } from "../lib/nav";
 import { useStore } from "../lib/store";
 import { DEFAULT_SETTINGS, type RosterPlayer, type Settings } from "../lib/types";
 import { MODE } from "./Lineups";
@@ -14,6 +15,7 @@ export function More() {
     { to: "/more/league", title: "My league", note: "Who to start and who to pick up, by expected points" },
     { to: "/more/settings", title: "Settings", note: "Balances, sportsbooks, salary files, sign out" },
   ];
+  useTitle("More");
   return (
     <div className="stack stack--tight">
       <h1 className="title">More</h1>
@@ -33,11 +35,12 @@ const POSN: Record<string, string> = { QB: "Quarterbacks", RB: "Running backs", 
 
 export function Results() {
   const cards = useScorecards();
+  useTitle("Results");
   if (cards.isLoading) return <Loading />;
   if (cards.error) return <ErrorNote error={cards.error} />;
   return (
     <div className="stack">
-      <div><p className="eyebrow"><Link to="/more">More</Link></p><h1 className="title">Results</h1>
+      <div><h1 className="title">Results</h1>
         <p className="small muted">Graded every Tuesday against what happened. One week proves little; the running record is what counts.</p></div>
       {(cards.data ?? []).length === 0 && <Empty title="No week has been graded yet" why="A week is graded once all its games are final and it had expected points on file before kickoff." how="The first one lands the Tuesday after this week's games." />}
       {(cards.data ?? []).map((c) => {
@@ -61,13 +64,17 @@ export function Results() {
             )}
             {(c.metrics.lineups ?? []).map((l) => (
               <div className="card card--pad" key={l.set_id}>
-                <p className="strong">{MODE[l.mode] ?? l.mode} · {l.n_complete} lineups</p>
+                <div className="spread">
+                  <p className="strong">{l.label || MODE[l.mode] || l.mode} · {l.n_complete} {l.n_complete === 1 ? "lineup" : "lineups"}</p>
+                  {l.entered && <span className="pill pill--ok">Entered</span>}
+                </div>
                 <dl className="kv kv--3">
                   <div><dt>Average score</dt><dd className="big num">{pts(l.avg_actual)}</dd></div>
                   <div><dt>Expected</dt><dd className="big num">{pts(l.avg_projected)}</dd></div>
                   <div><dt>Best lineup</dt><dd className="big big--accent num">{pts(l.best_actual)}</dd></div>
                 </dl>
-                <p className="small muted">{pct(l.in_p10_p90)} of lineups landed inside their expected range.</p>
+                {l.in_p10_p90 != null && <p className="small muted">{pct(l.in_p10_p90)} of lineups landed inside their expected range.</p>}
+                <Link className="btn btn--sm btn--quiet" to={`/lineups/${l.set_id}`}>See the lineups</Link>
               </div>
             ))}
             {pr && pr.n > 0 && (
@@ -154,7 +161,7 @@ function RosterRow({ p }: { p: RosterPlayer }) {
   return (
     <div className="prow">
       <PosTag pos={p.pos} />
-      <div className="grow"><p className="pname ellipsis">{p.name} <StatusPill status={p.injury_status} /></p>
+      <div className="grow"><PlayerName name={p.name} status={p.injury_status} />
         <p className="pmeta ellipsis">{p.opponent ? `${p.team} vs ${p.opponent} · ${kickoff(p.kickoff_at)}` : p.team ? `${p.team} · no game or no number this week` : "No number this week"}</p></div>
       <p className="pnum num">{pts(p.ppr_mean)}<small>{p.ppr_p10 != null ? `${pts(p.ppr_p10, 0)}–${pts(p.ppr_p90, 0)}` : ""}</small></p>
     </div>
@@ -164,6 +171,7 @@ function RosterRow({ p }: { p: RosterPlayer }) {
 export function League() {
   const roster = useRoster();
   const free = useFreeAgents();
+  useTitle("My league");
   if (roster.isLoading || free.isLoading) return <Loading />;
   if (roster.error) return <ErrorNote error={roster.error} />;
   const mine = [...(roster.data ?? [])].sort((a, b) => (b.ppr_mean ?? -1) - (a.ppr_mean ?? -1));
@@ -172,7 +180,7 @@ export function League() {
   const swaps = bench.filter((p) => (p.ppr_mean ?? 0) > worstStart + 0.5 && p.pos !== "QB");
   return (
     <div className="stack">
-      <div><p className="eyebrow"><Link to="/more">More</Link> · Sleeper</p><h1 className="title">My league</h1>
+      <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1>
         <p className="small muted">Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</p></div>
       {mine.length === 0 ? <Empty title="No roster found" why="Your Sleeper roster is read on Tuesdays and Saturdays." how="It appears after the next league refresh." /> : (
         <>
@@ -204,6 +212,7 @@ export function SettingsScreen() {
   const { say } = useStore();
   const [draft, setDraft] = useState<Settings>(DEFAULT_SETTINGS);
   const file = useRef<HTMLInputElement>(null);
+  useTitle("Settings");
   useEffect(() => { if (settings.data) setDraft(settings.data); }, [settings.data]);
   if (settings.isLoading) return <Loading />;
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft((d) => ({ ...d, [k]: v }));
@@ -220,7 +229,7 @@ export function SettingsScreen() {
 
   return (
     <div className="stack">
-      <div><p className="eyebrow"><Link to="/more">More</Link></p><h1 className="title">Settings</h1></div>
+      <div><h1 className="title">Settings</h1></div>
       <section className="card card--pad stack stack--tight" aria-label="Balances and stakes">
         <h2 className="h2">Balances and stakes</h2>
         <Stepper label="DraftKings balance" value={draft.balance_dfs} onChange={(v) => set("balance_dfs", v)} min={0} max={100000} step={25} format={usd} />
