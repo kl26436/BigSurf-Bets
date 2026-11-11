@@ -7,6 +7,7 @@ import * as demo from "./demo";
 import {
   DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
+  type WaiverRec, type WaiverRun,
 } from "./types";
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -97,6 +98,10 @@ export const useScorecards = () =>
   useQuery({ queryKey: ["scorecards"], queryFn: () => (DEMO ? demo.scorecards : all<Scorecard>("app_scorecards", (q) => q.order("season", { ascending: false }).order("week", { ascending: false }))) });
 export const useRoster = () =>
   useQuery({ queryKey: ["roster"], queryFn: () => (DEMO ? demo.roster : all<RosterPlayer>("app_my_roster")) });
+export const useWaiverRun = () =>
+  useQuery({ queryKey: ["waiver-run"], queryFn: async () => (DEMO ? demo.waiverRun : (await all<WaiverRun>("app_waiver_run"))[0] ?? null) });
+export const useWaiverRecs = () =>
+  useQuery({ queryKey: ["waiver-recs"], queryFn: () => (DEMO ? demo.waiverRecs : all<WaiverRec>("app_waiver_recs", (q) => q.order("rank"))) });
 export const useFreeAgents = () =>
   useQuery({ queryKey: ["free-agents"], queryFn: () => (DEMO ? demo.freeAgents : all<RosterPlayer>("app_free_agents", (q) => q.order("ppr_mean", { ascending: false }), 40)) });
 export const useJobs = () =>

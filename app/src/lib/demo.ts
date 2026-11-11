@@ -4,6 +4,7 @@ import { SLOTS } from "./lineup";
 import {
   DEFAULT_SETTINGS, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
+  type WaiverRec, type WaiverRun,
 } from "./types";
 
 let seed = 7;
@@ -154,6 +155,19 @@ const asRoster = (p: PoolPlayer, starter: boolean): RosterPlayer => ({
 export const roster: RosterPlayer[] = mine.map((p, i) => asRoster(p, i < 8));
 export const freeAgents: RosterPlayer[] = pool.filter((p, i) => p.pos !== "DST" && i % 9 === 4).slice(0, 14).map((p) => asRoster(p, false))
   .sort((a, b) => (b.ppr_mean ?? 0) - (a.ppr_mean ?? 0));
+
+const owners = ["You", "Rip Tide", "Shore Break", "Undertow", "Low Tide"];
+export const waiverRun: WaiverRun = {
+  id: 1, created_at: hoursAgo(3), week: 10, teams_left: 5, budget: 687, chop: 0.14, win: 0.21, drops: [{ name: roster[11]?.name ?? "Bench player", pos: "WR", loss: 0 }],
+  teams: owners.map((owner, i) => ({ roster_id: i + 1, owner, is_me: i === 0, budget: [687, 969, 410, 330, 50][i], mean: [110, 113, 96, 119, 132][i], chop: [0.14, 0.11, 0.52, 0.07, 0.03][i], win: [0.21, 0.2, 0.04, 0.2, 0.35][i] })),
+};
+export const waiverRecs: WaiverRec[] = freeAgents.slice(0, 6).map((p, i) => ({
+  run_id: 1, rank: i + 1, sleeper_id: p.sleeper_id, name: p.name, pos: p.pos, team: p.team, status: p.injury_status, proj: p.ppr_mean,
+  level: p.ppr_mean ?? 0, gain_now: 9 - i * 1.6, gain_avg: 8 - i * 1.4, d_chop: -0.05 + i * 0.008, d_win: 0.09 - i * 0.015,
+  bid_50: 240 - i * 40, bid_80: 330 - i * 55, bid_95: 480 - i * 80, bid: i === 0 ? 290 : i === 1 ? 245 : 0, win_at_bid: i < 2 ? 0.7 : null,
+  either_or: i < 2 ? "A" : null, drop_name: i < 2 ? roster[11]?.name ?? "Bench player" : null,
+  rivals: [{ owner: "Rip Tide", bid: 160 - i * 20 }, { owner: "Shore Break", bid: 130 - i * 20 }], can_outbid: i < 2 ? ["Rip Tide", "Shore Break"] : [],
+}));
 
 let jobList: Job[] = [{ id: 1, created_at: hoursAgo(30), kind: "build_lineups", payload: { n: 10 }, status: "done", started_at: hoursAgo(30),
   finished_at: hoursAgo(29.9), result: { set_id: 1, n_lineups: 10 }, error: null }];

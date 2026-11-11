@@ -212,3 +212,15 @@ export const DEFAULT_SETTINGS: Settings = {
   max_stake_pct: 0.05,
   books: ["betmgm", "circa", "draftkings", "fanduel", "caesars"],
 };
+
+export interface WaiverTeam { roster_id: number; owner: string; is_me: boolean; budget: number; mean: number; chop: number; win: number }
+export interface WaiverRun {
+  id: number; created_at: string; week: number; teams_left: number; budget: number; chop: number; win: number;
+  teams: WaiverTeam[]; drops: { name: string; pos: string; loss: number }[] | null;
+}
+export interface WaiverRec {
+  run_id: number; rank: number; sleeper_id: string; name: string; pos: string | null; team: string | null; status: string | null;
+  proj: number | null; level: number; gain_now: number; gain_avg: number; d_chop: number; d_win: number;
+  bid_50: number; bid_80: number; bid_95: number; bid: number; win_at_bid: number | null; either_or: string | null;
+  drop_name: string | null; rivals: { owner: string; bid: number }[] | null; can_outbid: string[] | null;
+}

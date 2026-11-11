@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Empty, ErrorNote, Loading, PosTag, StatusPill, Stepper } from "../components/ui";
-import { DEMO, supabase, useDispatches, useFreeAgents, useJobs, useRoster, useSaveSettings, useScorecards, useSettings } from "../lib/api";
+import { DEMO, supabase, useDispatches, useFreeAgents, useJobs, useRoster, useSaveSettings, useScorecards, useSettings, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, bookName, kickoff, pct, pts, signed, usd } from "../lib/format";
 import { useStore } from "../lib/store";
 import { DEFAULT_SETTINGS, type RosterPlayer, type Settings } from "../lib/types";
@@ -84,6 +84,72 @@ export function Results() {
   );
 }
 
+/** Guillotine league: who is in danger this week and what to bid at the weekly blind auction. */
+function WaiverBids() {
+  const run = useWaiverRun();
+  const recs = useWaiverRecs();
+  const r = run.data;
+  if (!r) return null;
+  const all = recs.data ?? [];
+  const bids = all.filter((c) => c.bid > 0);
+  const others = all.filter((c) => c.bid === 0).slice(0, 8);
+  const teams = [...r.teams].sort((a, b) => b.chop - a.chop);
+  const eitherOr = bids.filter((c) => c.either_or === bids[0]?.either_or).length > 1;
+  return (
+    <section aria-label="Waiver bids" className="stack stack--tight">
+      <div className="card__head"><h2 className="h2">Waiver bids</h2><span className="small muted">Week {r.week} · {r.teams_left} teams left · worked out {ago(r.created_at)}</span></div>
+      <div className="card card--pad">
+        <dl className="kv kv--3">
+          <div><dt>Money left</dt><dd className="big num">{usd(r.budget)}</dd></div>
+          <div><dt>Chopped this week</dt><dd className={`big num ${r.chop >= 0.15 ? "bad" : ""}`}>{pct(r.chop)}</dd></div>
+          <div><dt>Win the league</dt><dd className="big big--accent num">{pct(r.win)}</dd></div>
+        </dl>
+        <p className="small muted">Chances as your roster stands, before any pick-up.</p>
+      </div>
+      {bids.length === 0 ? <div className="card card--pad"><p className="strong">No bid worth making</p><p className="small">Nobody available improves your lineup enough to spend on this week.</p></div> : (
+        <div className="card">
+          {bids.map((c) => (
+            <div className="prow" key={c.sleeper_id}>
+              <PosTag pos={c.pos} />
+              <div className="grow">
+                <p className="pname">{c.name}</p>
+                <p className="pmeta">Wins about {pct(c.win_at_bid)} of the time · drop {c.drop_name ?? "your weakest player"}</p>
+                <p className="pmeta">{signed(c.gain_avg)} points a week · chop risk {signed(c.d_chop * 100)} points · {(c.can_outbid ?? []).length === 0 ? "nobody has the money to outbid this" : `${(c.can_outbid ?? []).length} ${(c.can_outbid ?? []).length === 1 ? "team has" : "teams have"} the money to outbid this`}</p>
+                <p className="pmeta">Safer: {usd(c.bid_80)} wins 8 in 10, {usd(c.bid_95)} wins 19 in 20</p>
+              </div>
+              <p className="pnum num">{usd(c.bid)}<small>bid</small></p>
+            </div>
+          ))}
+          {eitherOr && <p className="small muted card--pad">The bids that share a drop are either/or: enter the same player to drop on each, and put the one you want most first.</p>}
+        </div>
+      )}
+      <div className="cols cols--2">
+        <div className="card card--pad">
+          <p className="strong">Who is in danger</p>
+          <table className="table">
+            <thead><tr><th scope="col">Team</th><th scope="col">Money</th><th scope="col">Expected</th><th scope="col">Chopped</th></tr></thead>
+            <tbody>{teams.map((t) => (
+              <tr key={t.roster_id}><td className={t.is_me ? "strong" : undefined}>{t.is_me ? "You" : t.owner}</td><td className="num">{usd(t.budget)}</td><td className="num">{pts(t.mean)}</td><td className="num">{pct(t.chop)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        {others.length > 0 && (
+          <div className="card card--pad">
+            <p className="strong">Others available</p>
+            <table className="table">
+              <thead><tr><th scope="col">Player</th><th scope="col">Points a week</th><th scope="col">Price to win 8 in 10</th></tr></thead>
+              <tbody>{others.map((c) => (
+                <tr key={c.sleeper_id}><td>{c.name} <span className="muted">{c.pos}</span></td><td className="num">{signed(c.gain_avg)}</td><td className="num">{usd(c.bid_80)}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <p className="small muted">Bids are estimates: what rivals will pay is read from their past bids and the money they have left. Chances ignore players that later chops will free up.</p>
+    </section>
+  );
+}
+
 function RosterRow({ p }: { p: RosterPlayer }) {
   return (
     <div className="prow">
@@ -110,6 +176,7 @@ export function League() {
         <p className="small muted">Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</p></div>
       {mine.length === 0 ? <Empty title="No roster found" why="Your Sleeper roster is read on Tuesdays and Saturdays." how="It appears after the next league refresh." /> : (
         <>
+          <WaiverBids />
           {swaps.length > 0 && <div className="card card--pad" role="status"><p className="strong warn">Check your lineup</p>
             <p className="small">{swaps.map((p) => p.name).join(", ")} on your bench {swaps.length === 1 ? "is" : "are"} expected to outscore a current starter.</p></div>}
           <div className="cols cols--2">
