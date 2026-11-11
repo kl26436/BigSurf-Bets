@@ -7,7 +7,7 @@ import type { Pos } from "./types";
 export type Mark = "lock" | "exclude";
 export type PlayerSort = "points" | "value" | "salary";
 export interface PlayersView { pos: Pos | "ALL"; sort: PlayerSort; text: string }
-export interface BetsView { view: "best" | "prices" | "mine"; kind: "games" | "players" }
+export interface BetsView { view: "best" | "prices" | "price" | "mine"; kind: "games" | "players" }
 /** The hand-built lineup as it was last saved: the same nine again is not saved twice. */
 export interface SavedHand { key: string; setId: number; label: string | null }
 interface Toast { text: string; error?: boolean }

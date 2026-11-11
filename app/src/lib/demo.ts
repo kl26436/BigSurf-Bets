@@ -4,7 +4,7 @@ import { SLOTS } from "./lineup";
 import {
   DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type PushDevice, type RosterPlayer, type Scorecard, type Settings, type Slate,
-  type WaiverRec, type WaiverRun,
+  type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
 } from "./types";
 
 let seed = 7;
@@ -332,10 +332,37 @@ export const roster: RosterPlayer[] = mine.map((p, i) => asRoster(p, i < 8));
 export const freeAgents: RosterPlayer[] = pool.filter((p, i) => p.pos !== "DST" && i % 9 === 4).slice(0, 14).map((p) => asRoster(p, false))
   .sort((a, b) => (b.ppr_mean ?? 0) - (a.ppr_mean ?? 0));
 
+/** Sleeper's lineup with one change: the best benched runner, receiver or tight end takes the weakest such starter's place. */
+function sampleLineup(): NonNullable<WaiverRun["lineup"]> {
+  const flex = (p: RosterPlayer) => p.pos !== "QB";
+  const up = roster.filter((p) => !p.is_starter && flex(p)).sort((a, b) => (b.ppr_mean ?? 0) - (a.ppr_mean ?? 0))[0];
+  const down = roster.filter((p) => p.is_starter && flex(p)).sort((a, b) => (a.ppr_mean ?? 0) - (b.ppr_mean ?? 0))[0];
+  const swap = up && down && (up.ppr_mean ?? 0) > (down.ppr_mean ?? 0);
+  return roster.map((p) => {
+    const start = swap && p === up ? true : swap && p === down ? false : p.is_starter;
+    return { sleeper_id: p.sleeper_id, name: p.name, pos: p.pos ?? "WR", team: p.team, status: p.injury_status, mean: Math.round((p.ppr_mean ?? 0) * 10) / 10,
+      start, spot: swap && p === up ? "FLEX1" : null };
+  });
+}
+
 const owners = ["You", "Rip Tide", "Shore Break", "Undertow", "Low Tide"];
 export const waiverRun: WaiverRun = {
   id: 1, created_at: hoursAgo(3), week: 10, teams_left: 5, budget: 687, chop: 0.14, win: 0.21, drops: [{ name: roster[11]?.name ?? "Bench player", pos: "WR", loss: 0 }],
   teams: owners.map((owner, i) => ({ roster_id: i + 1, owner, is_me: i === 0, budget: [687, 969, 410, 330, 50][i], mean: [110, 113, 96, 119, 132][i], chop: [0.14, 0.11, 0.52, 0.07, 0.03][i], win: [0.21, 0.2, 0.04, 0.2, 0.35][i] })),
+  // the best legal lineup differs from the one set in Sleeper by one swap, so the start/sit note has something to say
+  lineup: sampleLineup(),
+  coming: owners.slice(1).map((owner, i) => ({ owner, budget: [969, 410, 330, 50][i], chop_1: [0.11, 0.52, 0.07, 0.03][i], chop_3: [0.38, 0.93, 0.3, 0.12][i],
+    players: freeAgents.slice(i * 3, i * 3 + 3).map((p, k) => ({ name: p.name, pos: p.pos ?? "WR", level: Math.round((18 - k * 3 - i) * 10) / 10, gain: Math.max(0, Math.round((7.5 - k * 2.5 - i * 0.8) * 10) / 10) })) }))
+    .sort((a, b) => b.chop_3 - a.chop_3),
+  advice: { verdict: "either", my_chop: 0.14, later_gain: 5.9, now: { name: freeAgents[0]?.name ?? "Free agent", gain: 8, price_80: 330, d_chop: -0.05 },
+    likeliest: { owner: "Shore Break", chop: 0.52, name: freeAgents[3]?.name ?? "Their best player", gain: 6.7 },
+    needs: [{ spot: "RB2", name: roster[2]?.name ?? "Starter", mine: 8.4, league: 11.9, gap: -3.5 }, { spot: "TE", name: roster[5]?.name ?? "Starter", mine: 6.1, league: 8.0, gap: -1.9 },
+      { spot: "WR1", name: roster[3]?.name ?? "Starter", mine: 17.2, league: 15.1, gap: 2.1 }] },
+  grade: { week: 9, priced_at: hoursAgo(190), settled_at: hoursAgo(170), n: 4, beat_50: 2, beat_80: 3, beat_95: 4, rows: [
+    { name: "Marcus Hayes", pos: "WR", bid_50: 210, bid_80: 300, bid_95: 430, suggested: 260, top_rival: 281, won_by: "Rip Tide", paid: 281, i_won: false, my_bid: 260 },
+    { name: "Devon Pierce", pos: "RB", bid_50: 120, bid_80: 170, bid_95: 240, suggested: 0, top_rival: 96, won_by: "Undertow", paid: 96, i_won: false, my_bid: null },
+    { name: "Cole Maddox", pos: "TE", bid_50: 40, bid_80: 70, bid_95: 110, suggested: 0, top_rival: 55, won_by: "Shore Break", paid: 55, i_won: false, my_bid: null },
+    { name: "Trey Quinn", pos: "WR", bid_50: 60, bid_80: 95, bid_95: 150, suggested: 71, top_rival: 30, won_by: "You", paid: 71, i_won: true, my_bid: 71 }] },
 };
 export const waiverRecs: WaiverRec[] = freeAgents.slice(0, 6).map((p, i) => ({
   run_id: 1, rank: i + 1, sleeper_id: p.sleeper_id, name: p.name, pos: p.pos, team: p.team, status: p.injury_status, proj: p.ppr_mean,
@@ -381,6 +408,37 @@ export const log = (playerId: string) => {
     receiving_yards: Math.round(20 + rnd() * 80), carries: p?.pos === "RB" ? Math.round(8 + rnd() * 12) : 0, rushing_yards: p?.pos === "RB" ? Math.round(30 + rnd() * 70) : 0,
     passing_yards: p?.pos === "QB" ? Math.round(180 + rnd() * 130) : 0 })));
 };
+// ---- price a line, results by player, your changes ---------------------------------
+// shapes like the model's: counts spread a little wider than Poisson, yards from a
+// skewed spread of outcomes around the projection
+const yardsGrid = (pred: number) => Array.from({ length: 201 }, (_, i) => Math.round(pred * 2.6 * Math.pow(i / 200, 1.7) * 100) / 100);
+const yardsDist = (stat: string, preds: number[]): ModelDist => ({ stat, kind: "emp", params: {
+  edges: preds.map((p, i) => (i < preds.length - 1 ? (p + preds[i + 1]) / 2 : p * 3)), pred_mean: preds, quantiles: preds.map(yardsGrid) } });
+const countDist = (stat: string, alpha: number): ModelDist => ({ stat, kind: "nb", params: { edges: [null], alphas: [alpha] } });
+export const dists: ModelDist[] = [
+  yardsDist("passing_yards", [120, 200, 240, 280]), yardsDist("rushing_yards", [5, 20, 45, 75, 100]), yardsDist("receiving_yards", [8, 25, 45, 70, 95]),
+  countDist("attempts", 0.02), countDist("completions", 0.03), countDist("passing_tds", 0.08), countDist("interceptions", 0.1),
+  countDist("carries", 0.07), countDist("receptions", 0.12), countDist("rushing_tds", 0.3), countDist("receiving_tds", 0.3),
+];
+export const playerResults: PlayerResult[] = pool.filter((p) => (p.dk_mean ?? 0) > 6).slice(0, 60).map((p, i) => {
+  const proj = Math.round((p.dk_mean ?? 0) * 10) / 10, dk = Math.max(0, Math.round(proj * (0.2 + ((i * 37) % 23) / 11) * 10) / 10);
+  return { season: 2026, week: 9, player_id: p.player_id ?? p.dk_id, name: p.name, pos: p.pos, team: p.team, dk, proj_dk: proj,
+    proj_p10: Math.round(proj * 3.2) / 10, proj_p90: Math.round(proj * 18) / 10, miss: Math.round((dk - proj) * 10) / 10 };
+}).sort((a, b) => b.miss - a.miss);
+export const propResults: PropResult[] = props.slice(0, 10).map((p, i) => {
+  const side = i % 3 === 0 ? "under" : "over", hit = i % 2 === 0;
+  const actual = Math.round((p.line + (side === "over" === hit ? 1 : -1) * (4 + i)) * 10) / 10;
+  return { season: 2026, week: 9, player_id: p.player_id, name: p.player_name, team: p.team, stat: p.stat, line: p.line, bookmaker: p.bookmaker,
+    over_decimal: p.over_decimal, under_decimal: p.under_decimal, proj_mean: p.proj_mean, model_over: side === "over" ? 0.58 : 0.41,
+    actual: Math.max(0, actual), came_in: actual > p.line ? "over" : "under", model_side: side } as PropResult;
+});
+export function listOverrides(): Promise<Override[]> {
+  return Promise.resolve(pool.filter((p) => p.override_dk_mean != null).map((p) => ({ season: 2026, week: 10, player_id: p.player_id!, name: p.name, pos: p.pos, team: p.team,
+    opponent: p.opponent, dk_mean: p.override_dk_mean!, model_dk_mean: p.model_dk_mean, note: null, updated_at: hoursAgo(1), this_week: true })));
+}
+export const modelRuns: ModelRun[] = [2, 9, 21, 33, 50].map((h, i) => ({ id: 40 - i, created_at: hoursAgo(h), model_version: "p2.2", season: 2026, week: 10,
+  n_players: 318 - i * 3, n_ruled_out: 148 - i * 4, metrics: { oof_mae_dk: 5.77 }, git_sha: "d851d42" }));
+
 export const loadSettings = (): Partial<Settings> => {
   try { return JSON.parse(localStorage.getItem("bsb-demo-settings") ?? "{}"); } catch { return {}; }
 };

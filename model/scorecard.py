@@ -199,7 +199,10 @@ def run(conn, season: int | None = None, week: int | None = None, offline: bool 
     with RunLogger(conn, "model.scorecard") as run_log:
         act = actuals(d, season, week)
         conn.execute("delete from bsb.player_results where sport = 'nfl' and season = %s and week = %s", (season, week))
-        insert_df(conn, "player_results", act.select("player_id", "position", "team", "dk", "ppr").with_columns(
+        believed = proj.select("player_id", pl.col("dk_mean").alias("proj_dk"), pl.col("dk_p10").alias("proj_p10"),
+                               pl.col("dk_p90").alias("proj_p90"))
+        insert_df(conn, "player_results", act.select("player_id", "position", "team", "dk", "ppr")
+                  .join(believed, on="player_id", how="left").with_columns(
             pl.lit("nfl").alias("sport"), pl.lit(season).alias("season"), pl.lit(week).alias("week")))
 
         cur = conn.execute(

@@ -10,7 +10,9 @@ import { Compare } from "./screens/Compare";
 import { Lineups } from "./screens/Lineups";
 import { SetDetail } from "./screens/SetDetail";
 import { Swap } from "./screens/Swap";
-import { League, More, Results, SettingsScreen } from "./screens/More";
+import { League } from "./screens/League";
+import { More, Results, SettingsScreen } from "./screens/More";
+import { Numbers } from "./screens/Numbers";
 import { Players } from "./screens/Players";
 import { SignIn } from "./screens/SignIn";
 import { Week } from "./screens/Week";
@@ -85,6 +87,7 @@ function Shell() {
             <Route path="/more" element={<More />} />
             <Route path="/more/results" element={<Results />} />
             <Route path="/more/league" element={<League />} />
+            <Route path="/more/numbers" element={<Numbers />} />
             <Route path="/more/settings" element={<SettingsScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

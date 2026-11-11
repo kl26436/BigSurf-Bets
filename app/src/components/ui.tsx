@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { ago, statusLabel } from "../lib/format";
 import { POS_LABEL } from "../lib/lineup";
 import type { Pos } from "../lib/types";
@@ -79,17 +79,33 @@ export function Fresh({ at, label }: { at: string | null | undefined; label?: st
 }
 
 /** The one bottom-sheet in the app. Escape and the backdrop close it. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // keyboard and screen-reader users land in the sheet, stay in it, and go back to where they were
+    const opener = document.activeElement as HTMLElement | null;
+    box.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return close.current();
+      if (e.key !== "Tab" || !box.current) return;
+      const items = [...box.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null);
+      if (items.length === 0) return e.preventDefault();
+      const first = items[0], last = items[items.length - 1], at = document.activeElement;
+      if (e.shiftKey && (at === first || !box.current.contains(at))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (at === last || !box.current.contains(at))) { e.preventDefault(); first.focus(); }
+    };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
-  }, [onClose]);
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; opener?.focus?.(); };
+  }, []);
   return (
     <div className="scrim" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={box}>
         <div className="sheet__grab" />
         <div className="spread">
           <h2 className="h2">{title}</h2>

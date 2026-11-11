@@ -285,10 +285,55 @@ export interface WaiverTeam { roster_id: number; owner: string; is_me: boolean; 
 export interface WaiverRun {
   id: number; created_at: string; week: number; teams_left: number; budget: number; chop: number; win: number;
   teams: WaiverTeam[]; drops: { name: string; pos: string; loss: number }[] | null;
+  // from runs made after November 11, 2026 (null on older ones)
+  lineup: WaiverLineupRow[] | null;
+  coming: WaiverComing[] | null;
+  advice: WaiverAdvice | null;
+  grade: WaiverGrade | null;
+}
+/** One of my players for the week about to be played: start him or not, and in which spot. */
+export interface WaiverLineupRow { sleeper_id: string; name: string; pos: string; team: string | null; status: string | null; mean: number; start: boolean; spot: string | null }
+/** A rival: how likely it is to be chopped, and its best players for my lineup. */
+export interface WaiverComing { owner: string; budget: number; chop_1: number; chop_3: number; players: { name: string; pos: string; level: number; gain: number }[] }
+export interface WaiverAdvice {
+  verdict: "now" | "wait" | "either" | "hold"; my_chop: number; later_gain: number;
+  now: { name: string; gain: number; price_80: number; d_chop: number } | null;
+  likeliest: { owner: string; chop: number; name: string | null; gain: number } | null;
+  needs?: { spot: string; name: string; mine: number; league: number; gap: number }[];
+}
+/** Last auction: the prices we gave beside the highest bid a rival actually made. */
+export interface WaiverGrade {
+  week: number; priced_at: string; settled_at: string; n: number; beat_50: number; beat_80: number; beat_95: number;
+  rows: { name: string; pos: string | null; bid_50: number; bid_80: number; bid_95: number; suggested: number; top_rival: number;
+    won_by: string | null; paid: number | null; i_won: boolean; my_bid: number | null }[];
 }
 export interface WaiverRec {
   run_id: number; rank: number; sleeper_id: string; name: string; pos: string | null; team: string | null; status: string | null;
   proj: number | null; level: number; gain_now: number; gain_avg: number; d_chop: number; d_win: number;
   bid_50: number; bid_80: number; bid_95: number; bid: number; win_at_bid: number | null; either_or: string | null;
   drop_name: string | null; rivals: { owner: string; bid: number }[] | null; can_outbid: string[] | null;
+}
+
+/** The shape the model fitted for one stat: enough to price any number in the app (lib/dist.ts). */
+export interface ModelDist { stat: string; kind: "nb" | "emp"; params: unknown; run_id?: number | null; updated_at?: string }
+
+/** What a player scored beside what was expected of him at kickoff. */
+export interface PlayerResult {
+  season: number; week: number; player_id: string; name: string; pos: string; team: string | null;
+  dk: number; proj_dk: number; proj_p10: number | null; proj_p90: number | null; miss: number;
+}
+/** A settled player bet line: the last price seen and how it came out. */
+export interface PropResult {
+  season: number; week: number; player_id: string; name: string | null; team: string | null; stat: string; line: number; bookmaker: string;
+  over_decimal: number | null; under_decimal: number | null; proj_mean: number | null; model_over: number | null;
+  actual: number; came_in: "over" | "under" | "push"; model_side: "over" | "under" | null;
+}
+/** A number of your own that replaces the model's. */
+export interface Override {
+  season: number; week: number; player_id: string; name: string; pos: string | null; team: string | null; opponent: string | null;
+  dk_mean: number; model_dk_mean: number | null; note: string | null; updated_at: string; this_week: boolean;
+}
+export interface ModelRun {
+  id: number; created_at: string; model_version: string; season: number; week: number; n_players: number | null; n_ruled_out: number | null;
+  metrics: Record<string, number> | null; git_sha: string | null;
 }

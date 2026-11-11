@@ -42,6 +42,8 @@ export interface Check {
   perOpenSpot: number | null;
   complete: boolean;
   problems: string[];
+  /** worth a second look, but the lineup can still be saved */
+  warnings: string[];
 }
 
 export function check(lineup: Lineup, budget = 50_000): Check {
@@ -57,7 +59,15 @@ export function check(lineup: Lineup, budget = 50_000): Check {
   lineup.forEach((p, i) => {
     if (p && !canFill(SLOTS[i], p.pos)) problems.push(`${p.name} can't play ${SLOT_LABEL[SLOTS[i]]}`);
   });
+  const warnings: string[] = [];
+  const doubt = players.filter((p) => /^(Q|D|QUESTIONABLE|DOUBTFUL)$/i.test(p.dk_status ?? p.injury_status ?? ""));
+  if (doubt.length) warnings.push(`${doubt.map((p) => p.name).join(", ")} ${doubt.length === 1 ? "is" : "are"} not certain to play. Check before kickoff.`);
+  for (const d of players.filter((p) => p.pos === "DST")) {
+    const facing = players.filter((p) => p.pos !== "DST" && p.team === d.opponent);
+    if (facing.length) warnings.push(`${facing.map((p) => p.name).join(", ")} ${facing.length === 1 ? "plays" : "play"} against your own defense: when one scores, the other loses points.`);
+  }
   return {
+    warnings,
     filled: players.length,
     salary,
     left: budget - salary,
@@ -123,6 +133,10 @@ export function visibleSets(all: LineupSet[]): { auto: LineupSet[]; mine: Lineup
 interface BuildRules { qb_stack?: number; bring_back?: number; lock?: string[]; exclude?: string[]; max_per_team?: number; min_salary?: number }
 interface BuildSettings { n?: number; mode?: string; max_exposure?: number; min_unique?: number; rules?: BuildRules }
 
+/** What a build uses when the options are left alone (optimizer/portfolio.py, classic.py). */
+export const DEFAULT_PER_TEAM = 5;
+export const DEFAULT_MIN_SPEND: Record<string, number> = { gpp: 48_500, cash: 49_000 };
+
 /** The settings a set was built with, in the words of the Build sheet: what tells two sets apart. */
 export function describeSettings(set: Pick<LineupSet, "settings" | "n_lineups" | "source">): string[] {
   if (set.source === "manual") return [];
@@ -133,6 +147,8 @@ export function describeSettings(set: Pick<LineupSet, "settings" | "n_lineups" |
   if (set.n_lineups > 1 && s.min_unique != null) out.push(`${s.min_unique} ${s.min_unique === 1 ? "player differs" : "players differ"}`);
   if ((r.qb_stack ?? 0) > 0) out.push(r.qb_stack === 1 ? "QB with a receiver" : `QB with ${r.qb_stack} receivers`);
   if ((r.bring_back ?? 0) > 0) out.push(r.bring_back === 1 ? "plus an opponent" : `plus ${r.bring_back} opponents`);
+  if (r.max_per_team != null && r.max_per_team !== DEFAULT_PER_TEAM) out.push(`at most ${r.max_per_team} from a team`);
+  if (r.min_salary != null && s.mode != null && r.min_salary !== DEFAULT_MIN_SPEND[s.mode]) out.push(`spends $${r.min_salary.toLocaleString()} or more`);
   if (r.lock?.length) out.push(`${r.lock.length} locked in`);
   if (r.exclude?.length) out.push(`${r.exclude.length} left out`);
   return out;

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { BetSheet, usd2, vsFair } from "../components/BetSheet";
+import { PriceLine } from "../components/PriceLine";
 import { Empty, ErrorNote, Facts, Loading, Sheet } from "../components/ui";
 import { useBets, useDeleteBet, useGradeBets, usePropEdges, useQuotes, useSettings, useSettleBet } from "../lib/api";
 import { useSheet, useTitle } from "../lib/nav";
@@ -39,8 +40,8 @@ const fromLine = (l: { player_id: string; player_name: string | null; game_id: s
   game_id: l.game_id, market: l.stat, number: l.line, outcome: side, player_id: l.player_id, fair_prob: fair, stake,
 });
 
-type View = "best" | "prices" | "mine";
-const VIEWS: Record<View, string> = { best: "Best bets", prices: "Prices", mine: "My bets" };
+type View = "best" | "prices" | "price" | "mine";
+const VIEWS: Record<View, string> = { best: "Best bets", prices: "Prices", price: "Price a line", mine: "My bets" };
 
 export function Bets() {
   const { betsView: { view, kind }, setBetsView } = useStore();
@@ -65,7 +66,7 @@ export function Bets() {
             <button key={v} className="chip" aria-pressed={view === v} onClick={() => setBetsView({ view: v })}>{VIEWS[v]}</button>
           ))}
         </div>
-        {view !== "mine" && (
+        {(view === "best" || view === "prices") && (
           <div className="chips chips--sub" role="group" aria-label="Kind of bet">
             <button className="chip" aria-pressed={kind === "games"} onClick={() => setBetsView({ kind: "games" })}>Games</button>
             <button className="chip" aria-pressed={kind === "players"} onClick={() => setBetsView({ kind: "players" })}>Players</button>
@@ -79,6 +80,7 @@ export function Bets() {
       {view === "prices" && (kind === "games"
         ? <GameBoard quotes={quotes.data ?? []} s={s} record={record} />
         : <PlayerBoard props={props.data ?? []} s={s} record={record} />)}
+      {view === "price" && <PriceLine s={s} record={record} />}
       {view === "mine" && <MyBets bets={bets.data ?? []} loading={bets.isLoading} record={record} />}
 
       {draft && <BetSheet draft={draft} onClose={closeRecord} />}

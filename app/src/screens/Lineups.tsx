@@ -4,8 +4,8 @@ import { Entries } from "../components/Entries";
 import { GamesPicker } from "../components/GamesPicker";
 import { Empty, ErrorNote, Facts, Loading, Sheet, Stepper } from "../components/ui";
 import { useDismissJob, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
-import { ago, pts, slateTitle } from "../lib/format";
-import { buildCards, describeSettings, visibleSets, type BuildCard } from "../lib/lineup";
+import { ago, pts, slateTitle, usd } from "../lib/format";
+import { DEFAULT_MIN_SPEND, DEFAULT_PER_TEAM, buildCards, describeSettings, visibleSets, type BuildCard } from "../lib/lineup";
 import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
@@ -150,8 +150,11 @@ function BuildSheet({ slateId, onClose }: { slateId: number; onClose: () => void
   const [n, setN] = useState(20);
   const [share, setShare] = useState(0.5);
   const [unique, setUnique] = useState(3);
-  const [stack, setStack] = useState(true);
-  const [bringBack, setBringBack] = useState(false);
+  const [stack, setStack] = useState(1);
+  const [bringBack, setBringBack] = useState(0);
+  const [perTeam, setPerTeam] = useState(DEFAULT_PER_TEAM);
+  const [minSpend, setMinSpend] = useState(DEFAULT_MIN_SPEND.gpp);
+  const [more, setMore] = useState(false);
   const [name, setName] = useState("");
   const names = useMemo(() => new Map((pool.data ?? []).map((p) => [p.dk_id, p.name])), [pool.data]);
   const live = Object.entries(marks).filter(([id]) => names.has(id));
@@ -160,7 +163,7 @@ function BuildSheet({ slateId, onClose }: { slateId: number; onClose: () => void
 
   function submit() {
     const label = name.trim();
-    const payload = { slate_id: slateId, mode, n, max_exposure: share, min_unique: unique, qb_stack: stack ? 1 : 0, bring_back: bringBack ? 1 : 0, lock, exclude,
+    const payload = { slate_id: slateId, mode, n, max_exposure: share, min_unique: unique, qb_stack: stack, bring_back: bringBack, max_per_team: perTeam, min_salary: minSpend, lock, exclude,
       ...(label ? { label } : {}) };
     request.mutate({ kind: "build_lineups", payload }, {
       onSuccess: () => { say(`Build started — ready in ${BUILD_TIME}`); onClose(); },
@@ -171,8 +174,8 @@ function BuildSheet({ slateId, onClose }: { slateId: number; onClose: () => void
     <Sheet title="Build a set of lineups" onClose={onClose}>
       <div className="stack stack--tight">
         <div className="chips" role="group" aria-label="Contest type">
-          <button className="chip" aria-pressed={mode === "gpp"} onClick={() => { setMode("gpp"); setN(20); setShare(0.5); setStack(true); }}>Tournaments</button>
-          <button className="chip" aria-pressed={mode === "cash"} onClick={() => { setMode("cash"); setN(3); setShare(0.67); setStack(false); }}>Cash games</button>
+          <button className="chip" aria-pressed={mode === "gpp"} onClick={() => { setMode("gpp"); setN(20); setShare(0.5); setStack(1); setMinSpend(DEFAULT_MIN_SPEND.gpp); }}>Tournaments</button>
+          <button className="chip" aria-pressed={mode === "cash"} onClick={() => { setMode("cash"); setN(3); setShare(0.67); setStack(0); setBringBack(0); setMinSpend(DEFAULT_MIN_SPEND.cash); }}>Cash games</button>
         </div>
         <p className="small muted">{mode === "gpp" ? "Tournaments pay the top few, so lineups chase a big score: quarterback paired with his receiver, each lineup built for a different way Sunday could go." : "50/50s and head-to-heads pay about half the field, so lineups take the highest expected points."}</p>
         <label className="field"><span>Name</span>
@@ -181,8 +184,16 @@ function BuildSheet({ slateId, onClose }: { slateId: number; onClose: () => void
         <Stepper label="Lineups" value={n} onChange={setN} min={1} max={150} step={n >= 20 ? 10 : 1} />
         <Stepper label="Most lineups any one player can be in" value={share} onChange={setShare} min={0.1} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} />
         <Stepper label="Players that must differ between any two lineups" value={unique} onChange={setUnique} min={1} max={6} />
-        <label className="check"><input type="checkbox" checked={stack} onChange={(e) => setStack(e.target.checked)} />Pair the quarterback with one of his receivers</label>
-        <label className="check"><input type="checkbox" checked={bringBack} onChange={(e) => setBringBack(e.target.checked)} />Add a player from the other team in that game</label>
+        <Stepper label="Receivers paired with the quarterback" value={stack} onChange={setStack} min={0} max={3} format={(v) => (v === 0 ? "None" : String(v))} />
+        <Stepper label="Players from the other team in that game" value={bringBack} onChange={(v) => { setBringBack(v); if (v > 0 && stack === 0) setStack(1); }} min={0} max={2} format={(v) => (v === 0 ? "None" : String(v))} />
+        <button className="btn btn--quiet btn--sm" aria-expanded={more} onClick={() => setMore(!more)}>{more ? "Fewer options" : "More options"}</button>
+        {more && (
+          <>
+            <Stepper label="Most players from one team (not counting its defense)" value={perTeam} onChange={setPerTeam} min={2} max={8} />
+            <Stepper label="Spend at least" value={minSpend} onChange={setMinSpend} min={45000} max={50000} step={100} format={usd} />
+            <p className="small muted">A higher floor keeps lineups from leaving budget unused; too high and few lineups fit. A player is never put against your own defense.</p>
+          </>
+        )}
         {live.length === 0 ? (
           <p className="small muted">Nobody is locked in or left out. Mark players on the Players tab to change that.</p>
         ) : (

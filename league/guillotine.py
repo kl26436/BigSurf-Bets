@@ -168,6 +168,29 @@ def best_lineup(pos: list[str], mean: np.ndarray, slots: list[str]) -> list[int]
     return used
 
 
+def slot_labels(slots: list[str]) -> list[str]:
+    """Names for the starting spots in the order `best_lineup` fills them:
+    QB, RB1, RB2, WR1, … then FLEX1, FLEX2."""
+    dedicated = [s for s in slots if s not in BENCH_SLOTS and s not in FLEX_SLOTS]
+    flex = ["FLEX" for s in slots if s in FLEX_SLOTS]
+    out: list[str] = []
+    for group in (dedicated, flex):
+        seen: dict[str, int] = {}
+        for s in group:
+            seen[s] = seen.get(s, 0) + 1
+            out.append(s if group.count(s) == 1 else f"{s}{seen[s]}")
+    return out
+
+
+def week_lineup(lg: League, players: list[Player], w: int = 0) -> list[tuple[str, Player, float]]:
+    """The best legal lineup for remaining week `w`: (spot, player, expected points)."""
+    if not players:
+        return []
+    means = np.array([weekly_means(lg, p)[w] for p in players])
+    idx = best_lineup([p.pos for p in players], means, lg.slots)
+    return [(lab, players[i], float(means[i])) for lab, i in zip(slot_labels(lg.slots), idx, strict=False)]
+
+
 def team_curve(lg: League, players: list[Player]) -> tuple[np.ndarray, np.ndarray]:
     """→ (mean, sd) of the team's best lineup for each remaining week."""
     n = len(lg.weeks)
@@ -325,6 +348,10 @@ class Result:
     recs: list[Rec]
     dollar_value: float         # lineup points a dollar kept is expected to buy later
     drops: list[tuple[Player, float]]      # my least valuable players: (player, points a week lost without him)
+    lineup: list[dict] = field(default_factory=list)    # my roster this week: who to start
+    needs: list[dict] = field(default_factory=list)     # my starting spots against the league's
+    coming: list[dict] = field(default_factory=list)    # rivals' best players and the chance they come free
+    advice: dict = field(default_factory=dict)          # bid now or wait
 
 
 def recommend(lg: League, n_sim: int = 20000, max_candidates: int = 24, seed: int = 7) -> Result:
@@ -378,7 +405,90 @@ def recommend(lg: League, n_sim: int = 20000, max_candidates: int = 24, seed: in
     dollar = _dollar_value(lg, base, mu, me_i)
     drops = _drop_order(lg, me, mu[me_i])
     _assign_bids(lg, me, recs, samples, cand_players, dollar, n_week, drops)
-    return Result(lg, base, mu[:, 0], recs, dollar, drops)
+    lineup, needs = _start_sit(lg, me)
+    coming = _coming(lg, base, mu, me_i)
+    advice = _now_or_wait(recs, coming, float(base.chop_now[me_i]))
+    return Result(lg, base, mu[:, 0], recs, dollar, drops, lineup, needs, coming, advice)
+
+
+def _start_sit(lg: League, me: Team) -> tuple[list[dict], list[dict]]:
+    """My roster for the week about to be played — who the best legal lineup
+    starts — and how each starting spot compares with the same spot on the
+    other teams still alive (the median of theirs)."""
+    mine = week_lineup(lg, me.players)
+    starting = {p.pid: (lab, m) for lab, p, m in mine}
+    w0 = {p.pid: float(weekly_means(lg, p)[0]) for p in me.players}
+    lineup = [
+        {"sleeper_id": p.pid, "name": p.name, "pos": p.pos, "team": p.team, "status": p.status,
+         "mean": round(w0[p.pid], 1), "start": p.pid in starting, "spot": starting.get(p.pid, (None,))[0]}
+        for p in sorted(me.players, key=lambda p: (p.pid not in starting, -w0[p.pid]))
+    ]
+    others: dict[str, list[float]] = {}
+    for t in lg.teams:
+        if t.is_me:
+            continue
+        for lab, _, m in week_lineup(lg, t.players):
+            others.setdefault(lab, []).append(m)
+    needs = []
+    for lab, p, m in mine:
+        if others.get(lab):
+            med = float(np.median(others[lab]))
+            needs.append({"spot": lab, "name": p.name, "mine": round(m, 1), "league": round(med, 1), "gap": round(m - med, 1)})
+    return lineup, sorted(needs, key=lambda d: d["gap"])
+
+
+def _coming(lg: League, base: Odds, mu: np.ndarray, me_i: int, top: int = 3) -> list[dict]:
+    """For every rival: the chance it is chopped this week / within three weeks,
+    and its best players with what each would add to my lineup. A team chopped
+    this week has its players in next week's auction."""
+    me = lg.teams[me_i]
+    out = []
+    for i, t in enumerate(lg.teams):
+        if i == me_i or not t.players:
+            continue
+        best = []
+        for p in sorted(t.players, key=lambda p: -p.level)[: top + 2]:
+            gain = float((team_curve(lg, me.players + [p])[0] - mu[me_i]).mean())
+            best.append({"name": p.name, "pos": p.pos, "level": round(p.level, 1), "gain": round(gain, 1)})
+        best = sorted(best, key=lambda d: -d["gain"])[:top]
+        out.append({
+            "owner": t.owner, "budget": round(t.budget),
+            "chop_1": round(float(base.chop_week[i, 0]), 4),
+            "chop_3": round(float(base.chop_week[i, :3].sum()), 4),
+            "players": best,
+        })
+    return sorted(out, key=lambda d: -d["chop_3"])
+
+
+def _now_or_wait(recs: list[Rec], coming: list[dict], my_chop: float) -> dict:
+    """A rule of thumb, not a solved problem: compare the best player on offer
+    now with the best one expected to come free after this week's chop (each
+    rival's best player for me, weighted by that rival's chance of going out).
+    It ignores that everyone else bids on those players too."""
+    best_now = max(recs, key=lambda r: r.gain_avg, default=None)
+    now_gain = best_now.gain_avg if best_now else 0.0
+    rivals_out = sum(c["chop_1"] for c in coming) or 1.0
+    later_gain = sum(c["chop_1"] * max((p["gain"] for p in c["players"]), default=0.0) for c in coming) / rivals_out
+    likeliest = max(coming, key=lambda c: c["chop_1"], default=None)
+    if now_gain < 0.75 and later_gain < 0.75:
+        verdict = "hold"            # nothing on offer now or likely next week moves my lineup
+    elif my_chop >= 0.15 and best_now is not None and best_now.d_chop <= -0.02:
+        verdict = "now"             # in real danger this week and a pick-up lowers it
+    elif later_gain > 1.25 * now_gain:
+        verdict = "wait"
+    elif now_gain > 1.25 * later_gain:
+        verdict = "now"
+    else:
+        verdict = "either"
+    return {
+        "verdict": verdict, "my_chop": round(my_chop, 4),
+        "now": {"name": best_now.player.name, "gain": round(now_gain, 1), "price_80": best_now.bid_80,
+                "d_chop": round(best_now.d_chop, 4)} if best_now else None,
+        "later_gain": round(later_gain, 1),
+        "likeliest": {"owner": likeliest["owner"], "chop": likeliest["chop_1"],
+                      "name": likeliest["players"][0]["name"] if likeliest["players"] else None,
+                      "gain": likeliest["players"][0]["gain"] if likeliest["players"] else 0.0} if likeliest else None,
+    }
 
 
 def _dollar_value(lg: League, base: Odds, mu: np.ndarray, me_i: int) -> float:
