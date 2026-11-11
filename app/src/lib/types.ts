@@ -254,7 +254,21 @@ export interface Settings {
   books: string[];          // sportsbooks the user can actually bet at
   notify_email_on: boolean; // e-mail alerts as well as pop-ups
   notify_email: string;     // where to; empty = the address you sign in with
+  dk_username: string;      // tells your entries apart in a contest results file
 }
+
+/** A finished DraftKings contest, from its results file. */
+export interface Contest {
+  id: number; slate_id: number | null; season: number | null; week: number | null; slate_type: string | null; contest_key: string;
+  name: string | null; entry_fee: number | null; n_entries: number; imported_at: string;
+  scores: { max: number; p99: number; p90: number; p75: number; p50: number; min: number } | null;
+  n_mine: number; best_rank: number | null; best_points: number | null;
+  won: number; n_unsettled: number; paid: number | null; profit: number | null;     // profit: null until the fee and every entry's winnings are in
+}
+export interface ContestEntry { contest_id: number; entry_id: string; entry_name: string | null; rank: number | null; points: number | null; lineup: string | null;
+  winnings: number | null; set_id: number | null; lineup_no: number | null }
+export interface ContestPlayer { contest_id: number; name: string; roster_position: string; player_id: string | null; pct_drafted: number | null; fpts: number | null }
+
 
 /** Something that changed: a player ruled out, a status, expected points. */
 export interface AppEvent {
@@ -279,6 +293,7 @@ export const DEFAULT_SETTINGS: Settings = {
   books: ["betmgm", "circa", "draftkings", "fanduel", "caesars"],
   notify_email_on: false,
   notify_email: "",
+  dk_username: "",
 };
 
 export interface WaiverTeam { roster_id: number; owner: string; is_me: boolean; budget: number; mean: number; chop: number; win: number }

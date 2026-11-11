@@ -8,6 +8,7 @@ import {
   DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type PushDevice, type SentNote, type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
+  type Contest, type ContestEntry, type ContestPlayer,
 } from "./types";
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -29,7 +30,7 @@ function num<T>(rows: T[]): T[] {
 }
 
 const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description", "title", "body", "target", "device",
-  "git_sha", "model_version", "entry_name"]);
+  "git_sha", "model_version", "entry_name", "entry_id", "contest_key", "lineup", "dk_username"]);
 
 /** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
 async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
@@ -148,6 +149,17 @@ export const useOverrides = () =>
   useQuery({ queryKey: ["overrides"], queryFn: () => (DEMO ? demo.listOverrides() : all<Override>("app_overrides", (q) => q.order("updated_at", { ascending: false }), 100)) });
 export const useModelRuns = () =>
   useQuery({ queryKey: ["model-runs"], queryFn: () => (DEMO ? demo.modelRuns : all<ModelRun>("app_model_runs", (q) => q.order("created_at", { ascending: false }), 12)) });
+export const useContests = () =>
+  useQuery({ queryKey: ["contests"], queryFn: () => (DEMO ? demo.listContests() : all<Contest>("app_contests", (q) => q.order("imported_at", { ascending: false }))) });
+export const useContestEntries = (enabled: boolean) =>
+  useQuery({ queryKey: ["contest-entries"], enabled, queryFn: () => (DEMO ? demo.listContestEntries() : all<ContestEntry>("app_contest_entries", (q) => q.order("rank"))) });
+export const useContestPlayers = (contestId: number | null) =>
+  useQuery({ queryKey: ["contest-players", contestId], enabled: contestId != null, staleTime: 30 * MIN,
+    queryFn: () => (DEMO ? demo.contestPlayers(contestId!) : all<ContestPlayer>("app_contest_ownership", (q) => q.eq("contest_id", contestId).order("pct_drafted", { ascending: false }), 60)) });
+/** Every entry id the entries files have told us about: how your rows are found in a results file. */
+export const useKnownEntryIds = () =>
+  useQuery({ queryKey: ["entries", "ids"], staleTime: 5 * MIN, queryFn: async () =>
+    new Set((DEMO ? await demo.listEntries() : await all<DkEntry>("app_dk_entries")).map((e) => e.entry_id)) });
 export const useJobs = () =>
   useQuery({ queryKey: ["jobs"], queryFn: () => (DEMO ? demo.jobs() : all<Job>("app_jobs", (q) => q.order("created_at", { ascending: false }), 15)),
     refetchInterval: (q) => ((q.state.data ?? []).some((j) => ["queued", "dispatched", "running"].includes(j.status)) ? 8000 : MIN) });
@@ -230,6 +242,17 @@ export const useDeleteLineup = () =>
     DEMO ? demo.deleteLineup(a.set_id, a.lineup_no) : rpc<number>("bsb_delete_lineup", { p_set_id: a.set_id, p_lineup_no: a.lineup_no }), ["sets", "set"]);
 export const useDismissJob = () =>
   useWrite((a: { job_id: number }) => (DEMO ? demo.dismissJob(a.job_id) : rpc("bsb_dismiss_job", { p_job_id: a.job_id })), ["jobs"]);
+/** Store what a results file held → {contest_id, entries, players} */
+export const useImportContest = () =>
+  useWrite((a: { contest: Record<string, unknown> }) =>
+    DEMO ? demo.importContest(a.contest) : rpc<{ contest_id: number; entries: number; players: number }>("bsb_import_contest", { p_slate_id: null, p: a.contest }),
+    ["contests", "contest-entries", "contest-players"]);
+export const useSetContestMoney = () =>
+  useWrite((a: { contest_id: number; entry_fee: number | null; name: string | null; winnings: Record<string, number | null> }) =>
+    DEMO ? demo.setContestMoney(a.contest_id, a.entry_fee, a.name, a.winnings)
+      : rpc("bsb_set_contest_money", { p_contest_id: a.contest_id, p_entry_fee: a.entry_fee, p_name: a.name, p_winnings: a.winnings }), ["contests", "contest-entries"]);
+export const useDeleteContest = () =>
+  useWrite((a: { contest_id: number }) => (DEMO ? demo.deleteContest(a.contest_id) : rpc("bsb_delete_contest", { p_contest_id: a.contest_id })), ["contests", "contest-entries"]);
 export const useSaveSettings = () =>
   useWrite((s: Settings) => (DEMO ? demo.saveSettings(s) : rpc("bsb_save_settings", { p_settings: s })), ["settings"]);
 export const useClaim = () => useWrite((_: void) => rpc<string>("bsb_claim_owner"), ["whoami"]);
