@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Empty, ErrorNote, Loading } from "../components/ui";
 import { usePropEdges, useQuotes, useSettings } from "../lib/api";
+import { useTitle } from "../lib/nav";
 import { ago, bookName, kickoff, odds, pct, pts, signed, statName, usd } from "../lib/format";
 import { arbSplit, decimalToAmerican, suggestedStake } from "../lib/stake";
 import { DEFAULT_SETTINGS, type LineQuote, type PropEdge } from "../lib/types";
@@ -12,6 +13,11 @@ export function describe(q: LineQuote): string {
   if (q.market === "spread") return `${team} ${signed(q.line)}`;
   return `${q.outcome === "over" ? "Over" : "Under"} ${pts(q.line)}`;
 }
+
+/** Two-sided gaps close within minutes. Past this age a pair is history, not an offer. */
+const ARB_FRESH_MINUTES = 15;
+/** Below a dollar there is nothing to stake: say so instead of printing "$0". */
+const stakeNote = (stake: number) => (stake >= 1 ? `stake ${usd(stake)}` : "too small to stake at your balance");
 
 function Stale({ at }: { at: string | null | undefined }) {
   if (!at) return null;
@@ -25,6 +31,7 @@ export function Bets() {
   const props = usePropEdges();
   const settings = useSettings();
   const s = settings.data ?? DEFAULT_SETTINGS;
+  useTitle("Bets");
   const mine = (book: string) => s.books.includes(book);
   const stake = (p: number | null, d: number | null) => (p == null || d == null ? 0 : suggestedStake(s.balance_bets, p, d, s.stake_fraction, s.max_stake_pct));
 
@@ -36,9 +43,9 @@ export function Bets() {
       by.set(k, [...(by.get(k) ?? []), q]);
     }
     return [...by.values()].filter((v) => v.length >= 2).map((v) => [v.find((q) => q.outcome === "home" || q.outcome === "over")!, v.find((q) => q.outcome === "away" || q.outcome === "under")!])
-      .filter(([a, b]) => a && b && a.bookmaker !== "pinnacle" && b.bookmaker !== "pinnacle")
+      .filter(([a, b]) => a && b && a.bookmaker !== "pinnacle" && b.bookmaker !== "pinnacle" && mine(a.bookmaker) && mine(b.bookmaker))
       .sort((x, y) => (y[0].arb_pct ?? 0) - (x[0].arb_pct ?? 0));
-  }, [quotes.data]);
+  }, [quotes.data, s.books]);
   const value = useMemo(() => (quotes.data ?? []).filter((q) => (q.ev ?? 0) >= 0.01 && q.bookmaker !== "pinnacle" && mine(q.bookmaker))
     .sort((a, b) => (b.ev ?? 0) - (a.ev ?? 0)).slice(0, 25), [quotes.data, s.books]);
 
@@ -68,17 +75,23 @@ export function Bets() {
           <Stale at={quotes.data?.[0]?.captured_at} />
           <section className="stack stack--tight" aria-label="Guaranteed profit">
             <div><h2 className="h2">Guaranteed profit</h2><p className="small muted">Two books disagree enough that backing both sides pays whatever happens.</p></div>
-            {arbs.length === 0 ? <Empty title="Nothing right now" why="These gaps are rare and close within minutes." /> : arbs.map(([a, b]) => {
-              const split = arbSplit(100, a.price_decimal, b.price_decimal);
+            {arbs.length === 0 ? <Empty title="Nothing right now" why="These gaps are rare and close within minutes. Only books you can bet at are shown." /> : arbs.map(([a, b]) => {
+              const total = Math.max(2, Math.min(100, Math.floor(s.balance_bets)));
+              const split = arbSplit(total, a.price_decimal, b.price_decimal);
+              const minutes = (Date.now() - Date.parse(a.captured_at)) / 60e3;
+              const gone = !(minutes <= ARB_FRESH_MINUTES);
               return (
                 <div className="card card--pad" key={`${a.game_id}${a.market}${a.number}`}>
-                  <div className="card__head"><p className="strong">{a.away_team} at {a.home_team}</p><span className="pill pill--ok">+{pct(a.arb_pct, 2)}</span></div>
+                  <div className="card__head"><p className="strong">{a.away_team} at {a.home_team}</p>
+                    <span className={`pill ${gone ? "pill--warn" : "pill--ok"}`}>{gone ? `Was +${pct(a.arb_pct, 2)} · ${ago(a.captured_at)}` : `+${pct(a.arb_pct, 2)}`}</span></div>
                   {[[a, split.a], [b, split.b]].map(([q, amt]) => {
                     const x = q as LineQuote;
                     return <div className="rowline" key={x.outcome}><div className="grow"><p className="strong">{describe(x)}</p><p className="small muted">{bookName(x.bookmaker)}</p></div>
                       <p className="pnum num">{odds(x.price_american)}<small>stake {usd(amt as number)}</small></p></div>;
                   })}
-                  <p className="small muted">Stake $100 in total this way and you're up ${split.profit.toFixed(2)} whichever side wins. Both books must still be showing these prices.</p>
+                  {gone
+                    ? <p className="small warn" role="status">Seen {ago(a.captured_at)} — almost certainly gone. Refresh prices on the Week tab, then check both books before staking anything.</p>
+                    : <p className="small muted">Stake {usd(total)} in total this way and you're up ${split.profit.toFixed(2)} whichever side wins. Both books must still be showing these prices.</p>}
                 </div>
               );
             })}
@@ -90,7 +103,7 @@ export function Bets() {
                 <div className="rowline" key={`${q.game_id}${q.market}${q.number}${q.outcome}${q.bookmaker}`}>
                   <div className="grow"><p className="strong">{describe(q)}</p><p className="small muted">{q.away_team} at {q.home_team} · {kickoff(q.kickoff_at)} · {bookName(q.bookmaker)}</p></div>
                   <div className="right num"><p className="strong">{odds(q.price_american)} <span className="good">{signed((q.ev ?? 0) * 100)}%</span></p>
-                    <p className="small muted">true chance {pct(q.fair_prob, 1)} · stake {usd(stake(q.fair_prob, q.price_decimal))}</p></div>
+                    <p className="small muted">true chance {pct(q.fair_prob, 1)} · {stakeNote(stake(q.fair_prob, q.price_decimal))}</p></div>
                 </div>))}
               </div>
             )}
@@ -99,7 +112,7 @@ export function Bets() {
       ) : (
         <>
           <Stale at={props.data?.[0]?.captured_at} />
-          <PropList title="Better than the sharp price" note="Same bet, same number, priced above Pinnacle's fair chance." rows={fairSides} chance={(x) => x.fair} stake={stake}
+          <PropList title="Better than the sharp price" note="Same bet, same number, priced above Pinnacle's fair chance." rows={fairSides} chance={(x) => x.fair} stake={stake} staked
             empty={{ title: "No player bets beat the sharp price", why: "Books post these close to game day, and most are priced tightly." }} />
           <PropList title="Where the model disagrees" note="The model's chance is unproven until the weekly results show it beats the market. Treat these as leads, not bets." rows={modelSides} chance={(x) => x.model} stake={() => 0}
             empty={{ title: "No disagreements above 2%", why: "Either no player bets are posted yet or the model agrees with the books." }} />
@@ -109,9 +122,9 @@ export function Bets() {
   );
 }
 
-function PropList({ title, note, rows, chance, stake, empty }: {
+function PropList({ title, note, rows, chance, stake, staked = false, empty }: {
   title: string; note: string; rows: { e: PropEdge; side: string; price: number; ev: number; fair: number | null; model: number | null }[];
-  chance: (x: { fair: number | null; model: number | null }) => number | null; stake: (p: number | null, d: number | null) => number; empty: { title: string; why: string };
+  chance: (x: { fair: number | null; model: number | null }) => number | null; stake: (p: number | null, d: number | null) => number; staked?: boolean; empty: { title: string; why: string };
 }) {
   return (
     <section className="stack stack--tight" aria-label={title}>
@@ -124,7 +137,7 @@ function PropList({ title, note, rows, chance, stake, empty }: {
               <div className="grow"><p className="strong">{x.e.player_name} {x.side.toLowerCase()} {pts(x.e.line)} {statName(x.e.stat).toLowerCase()}</p>
                 <p className="small muted">{x.e.team} · {bookName(x.e.bookmaker)} · model expects {pts(x.e.proj_mean)}</p></div>
               <div className="right num"><p className="strong">{odds(decimalToAmerican(x.price))} <span className="good">{signed(x.ev * 100)}%</span></p>
-                <p className="small muted">chance {pct(chance(x), 1)}{st > 0 ? ` · stake ${usd(st)}` : ""}</p></div>
+                <p className="small muted">chance {pct(chance(x), 1)}{staked ? ` · ${stakeNote(st)}` : ""}</p></div>
             </div>);
         })}</div>
       )}

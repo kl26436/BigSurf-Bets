@@ -146,7 +146,9 @@ bsb model scorecard              # grade the last finished week
   `bsb.scorecards` — projections believed at kickoff vs actual (and vs DraftKings' own average
   points), each saved lineup's real score vs its simulated range, and the model's prop
   probabilities vs Pinnacle's with the P&L of the edges it flagged. `bsb.player_results` keeps the
-  actual DK/PPR points per player and DST.
+  actual DK/PPR points per player and DST. The lineups it reports are the ones on the app's Lineups
+  screen at the time (the newest automatic set of each kind, and every set the user built that is not
+  archived) plus anything marked as entered; superseded automatic sets are left out.
 - Odds snapshots: Thu 18:00, Sat 22:00, Sun 10:00, Mon 18:00 ET (props are only posted near game
   day). ≈ 125 of OddsPapi's 250 monthly requests.
 
@@ -190,6 +192,8 @@ Trigger any job manually from the Actions tab (`Weekly ingest` → Run workflow 
   stat columns share names with `player_week_stats` so projected-vs-actual is a plain join
 - `ingest_runs` — every job run, with row counts and errors
 - `app_users`, `app_jobs`, `projection_overrides`, `user_settings`, `dispatches` — the app's side (Phase 4)
+- `lineup_sets` carry what the app adds: `source` (auto / user / manual), `label`, `entered`, `archived_at`. A set
+  marked as entered cannot be deleted or changed (`bsb_delete_set`, `bsb_delete_lineup` refuse); archive it instead
 - `public.app_*` views and `public.bsb_*` functions — the only things the app can reach; `bsb` itself is closed
   to the API roles (row-level security on every table)
 

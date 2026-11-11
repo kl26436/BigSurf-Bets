@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 10
+    assert len(db.migrate(url)) >= 11
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -139,7 +139,9 @@ def test_signed_in_stranger_sees_no_rows_and_cannot_write(db_url):
             assert all(r[5] is None for r in rows) if v == "app_feed_health" else rows == [], v
         assert c.execute("select count(*) from bsb.dfs_salaries").fetchone()[0] == 0
         for call in ["public.bsb_request_job('project')", "public.bsb_set_entered(1, true)",
-                     "public.bsb_set_override(2026, 10, 'x', 12)", "public.bsb_save_settings('{}'::jsonb)"]:
+                     "public.bsb_set_override(2026, 10, 'x', 12)", "public.bsb_save_settings('{}'::jsonb)",
+                     "public.bsb_rename_set(1, 'x')", "public.bsb_archive_set(1)", "public.bsb_delete_set(1)",
+                     "public.bsb_delete_lineup(1, 1)", "public.bsb_dismiss_job(1)"]:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(f"select {call}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -244,6 +246,157 @@ def test_app_job_builds_a_lineup_set(db_url, monkeypatch):
     with As(db_url, "authenticated", ALICE) as c:
         status, err = c.execute("select status, error from public.app_jobs where id = %s", (job2,)).fetchone()
         assert status == "failed" and "between" in err
+
+
+def _stored_set(url: str, source: str, mode: str = "gpp", n: int = 2, entered: bool = False, archived: bool = False,
+                label: str | None = None, simulated: bool = True) -> int:
+    """A lineup set written the way the pipeline writes one: `n` lineups of the same nine players."""
+    with psycopg.connect(url) as c:
+        nine = c.execute(
+            """(select site_player_id, player_id, player_name, position, team, opponent, salary from bsb.dfs_salaries
+                where slate_id = 1 and position = 'QB' order by salary limit 1)
+               union all (select site_player_id, player_id, player_name, position, team, opponent, salary from bsb.dfs_salaries
+                where slate_id = 1 and position = 'RB' order by salary limit 3)
+               union all (select site_player_id, player_id, player_name, position, team, opponent, salary from bsb.dfs_salaries
+                where slate_id = 1 and position = 'WR' order by salary limit 3)
+               union all (select site_player_id, player_id, player_name, position, team, opponent, salary from bsb.dfs_salaries
+                where slate_id = 1 and position = 'TE' order by salary limit 1)
+               union all (select site_player_id, player_id, player_name, position, team, opponent, salary from bsb.dfs_salaries
+                where slate_id = 1 and position = 'DST' order by salary limit 1)"""
+        ).fetchall()
+        sid = c.execute(
+            """insert into bsb.lineup_sets (slate_id, run_id, mode, n_lineups, settings, summary, source, entered, label, archived_at)
+               values (1, 1, %s, %s, '{}'::jsonb, %s::jsonb, %s, %s, %s, case when %s then now() end) returning id""",
+            (mode, n, json.dumps({"n": n, "avg_proj": 100, "players_used": 9, "set_best_mean": 140, "set_best_p90": 160}),
+             source, entered, label, archived),
+        ).fetchone()[0]
+        for k in range(1, n + 1):
+            c.execute(
+                "insert into bsb.lineups (set_id, lineup_no, salary, proj, sim_mean, p10, p50, p90, best_of_set_pct) values (%s, %s, 45000, %s, %s, %s, %s, %s, %s)",
+                (sid, k, 100 + k, *((101 + k, 80, 100, 125, 50) if simulated else (None, None, None, None, None))),
+            )
+            for i, (dk, pid, name, pos, team, opp, sal) in enumerate(nine):
+                c.execute(
+                    """insert into bsb.lineup_players (set_id, lineup_no, slot_no, slot, site_player_id, player_id, player_name, position, team, opponent, salary, dk_mean)
+                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 10)""",
+                    (sid, k, i, pos, dk, pid, name, pos, team, opp, sal),
+                )
+        c.commit()
+    return sid
+
+
+def test_lineup_sets_can_be_named_trimmed_archived_and_removed(db_url):
+    sid = _stored_set(db_url, "user", n=3)
+    with As(db_url, "authenticated", ALICE) as c:
+        row = lambda: c.execute("select label, archived_at, n_lineups, summary, entered from public.app_lineup_sets where id = %s", (sid,)).fetchone()  # noqa: E731
+        c.execute("select public.bsb_rename_set(%s, %s)", (sid, "  Low   risk \n " + "x" * 80))
+        assert row()[0] == ("Low risk " + "x" * 80)[:60]
+        c.execute("select public.bsb_rename_set(%s, '   ')", (sid,))
+        assert row()[0] is None                                   # an empty name clears it
+        with pytest.raises(psycopg.errors.RaiseException, match="no such lineup set"):
+            c.execute("select public.bsb_rename_set(999999, 'x')")
+
+        c.execute("select public.bsb_archive_set(%s)", (sid,))
+        first = row()[1]
+        assert first is not None
+        c.execute("select public.bsb_archive_set(%s, true)", (sid,))
+        assert row()[1] == first                                  # archiving twice keeps the first time
+        c.execute("select public.bsb_archive_set(%s, false)", (sid,))
+        assert row()[1] is None
+
+        # one lineup out: the count and the numbers that can be recomputed follow, the simulated ones are cleared
+        assert c.execute("select public.bsb_delete_lineup(%s, 2)", (sid,)).fetchone()[0] == 2
+        _, _, n, summary, _ = row()
+        assert n == 2 and summary["n"] == 2 and summary["players_used"] == 9 and float(summary["avg_proj"]) == 102.0
+        assert "set_best_mean" not in summary and "set_best_p90" not in summary
+        assert [r[0] for r in c.execute("select lineup_no from public.app_lineups where set_id = %s order by 1", (sid,))] == [1, 3]
+        assert c.execute("select count(*) from public.app_lineup_players where set_id = %s and lineup_no = 2", (sid,)).fetchone()[0] == 0
+        assert c.execute("select count(best_of_set_pct) from public.app_lineups where set_id = %s", (sid,)).fetchone()[0] == 0
+        with pytest.raises(psycopg.errors.RaiseException, match="no such lineup"):
+            c.execute("select public.bsb_delete_lineup(%s, 2)", (sid,))
+
+        # an entered set is the record of what was played: no delete, no changes
+        c.execute("select public.bsb_set_entered(%s, true)", (sid,))
+        for call in ("bsb_delete_set(%s)", "bsb_delete_lineup(%s, 1)"):
+            with pytest.raises(psycopg.errors.RaiseException, match="entered"):
+                c.execute(f"select public.{call}", (sid,))
+        assert row()[2] == 2
+        c.execute("select public.bsb_archive_set(%s)", (sid,))      # archiving it is allowed
+        c.execute("select public.bsb_set_entered(%s, false)", (sid,))
+        c.execute("select public.bsb_delete_set(%s)", (sid,))
+        assert row() is None
+        assert c.execute("select count(*) from public.app_lineups where set_id = %s", (sid,)).fetchone()[0] == 0
+        assert c.execute("select count(*) from public.app_lineup_players where set_id = %s", (sid,)).fetchone()[0] == 0
+
+        # the last lineup takes its set with it
+        one = c.execute("select public.bsb_save_lineup(1, %s, 'solo')", (_legal_nine(c),)).fetchone()[0]
+        assert c.execute("select public.bsb_delete_lineup(%s, 1)", (one,)).fetchone()[0] == 0
+        assert c.execute("select count(*) from public.app_lineup_sets where id = %s", (one,)).fetchone()[0] == 0
+
+        # a request that failed can be waved away
+        job = c.execute("select public.bsb_request_job('build_lineups', '{}'::jsonb)").fetchone()[0]
+        assert c.execute("select dismissed_at from public.app_jobs where id = %s", (job,)).fetchone()[0] is None
+        c.execute("select public.bsb_dismiss_job(%s)", (job,))
+        assert c.execute("select dismissed_at from public.app_jobs where id = %s", (job,)).fetchone()[0] is not None
+
+
+def test_scorecard_reports_the_sets_on_the_lineups_screen_and_entered_ones(db_url):
+    from model import scorecard
+
+    old_auto = _stored_set(db_url, "auto")
+    old_auto_entered = _stored_set(db_url, "auto", entered=True)
+    new_auto = _stored_set(db_url, "auto")
+    cash_auto = _stored_set(db_url, "auto", mode="cash")
+    mine = _stored_set(db_url, "user", label="Low risk")
+    binned = _stored_set(db_url, "user", archived=True)
+    binned_but_played = _stored_set(db_url, "user", archived=True, entered=True)
+    by_hand = _stored_set(db_url, "manual", mode="manual", n=1, simulated=False)
+    with psycopg.connect(db_url) as c:
+        c.execute("update bsb.lineups set actual_points = 110 where set_id = any(%s)",
+                  ([old_auto, old_auto_entered, new_auto, cash_auto, mine, binned, binned_but_played, by_hand],))
+        c.commit()
+        lu = scorecard.graded_lineups(c, 2026, 10)
+    graded = set(lu["set_id"].to_list())
+    assert {new_auto, cash_auto, mine, binned_but_played, old_auto_entered, by_hand} <= graded
+    assert not ({old_auto, binned} & graded)
+
+    by_set = {m["set_id"]: m for m in scorecard.lineup_metrics(lu)}
+    assert by_set[mine]["label"] == "Low risk" and by_set[mine]["source"] == "user" and by_set[mine]["entered"] is False
+    assert by_set[mine]["in_p10_p90"] == 1.0 and by_set[mine]["avg_projected"] == 102.5
+    hand = by_set[by_hand]                      # no simulation behind a hand-built lineup: graded on its projection
+    assert hand["avg_actual"] == 110.0 and hand["avg_projected"] == 101.0 and hand["in_p10_p90"] is None
+    assert "inside the 80% range" not in scorecard.to_text(
+        {"season": 2026, "week": 10, "projections": {"n_played": 0, "did_not_play": 0, "pre_kickoff_share": 1, "by_position": {}},
+         "lineups": [hand], "props": {"n": 0}})
+
+
+def test_the_app_only_calls_views_columns_and_functions_that_exist(db_url):
+    """app/src/lib/api.ts names views, columns and functions as strings: nothing checks them
+    until a screen fails for a signed-in user. Check every one against the migrated database."""
+    import re
+
+    api = (Path(__file__).parent.parent / "app" / "src" / "lib" / "api.ts").read_text()
+    reads = re.findall(r'all<[^>]+>\("(\w+)"(?:,\s*\(q\)\s*=>\s*q((?:\.\w+\([^()]*\))+))?', api)
+    calls = re.findall(r'\brpc\b[^"\n]*"(bsb_\w+)"(?:,\s*\{([^}]*)\})?', api)
+    assert len(reads) >= 15 and len(calls) >= 14, (len(reads), len(calls))
+    with psycopg.connect(db_url) as c:
+        for view, chain in reads:
+            cols = {r[0] for r in c.execute(
+                "select column_name from information_schema.columns where table_schema = 'public' and table_name = %s", (view,))}
+            assert cols, f"the app reads public.{view}, which does not exist"
+            for col in re.findall(r'\.(?:eq|order|is|in|gt|lt|gte|lte)\("(\w+)"', chain):
+                assert col in cols, f"the app filters or sorts public.{view} by {col!r}, which it does not have"
+        for fn, args in calls:
+            rows = c.execute(
+                """select p.proargnames, p.pronargs, p.pronargdefaults from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                   where n.nspname = 'public' and p.proname = %s""", (fn,)).fetchall()
+            assert len(rows) == 1, f"the app calls public.{fn}: found {len(rows)} functions by that name"
+            names, n_args, n_defaults = rows[0]
+            params = list(names or [])[:n_args]
+            sent = re.findall(r'(\w+):', args)
+            assert set(sent) <= set(params), f"{fn}: the app sends {sorted(set(sent) - set(params))}, the function takes {params}"
+            required = params[:n_args - n_defaults]
+            assert set(required) <= set(sent), f"{fn}: the app leaves out {sorted(set(required) - set(sent))}"
 
 
 def test_who_is_out_uses_this_weeks_information(db_url):

@@ -25,6 +25,7 @@ jobs:
       VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -41,6 +42,20 @@ jobs:
           name: app-dist
           path: app/dist
           retention-days: 14
+      # The app calls database functions by name: a new screen must never go live
+      # before the migration that creates what it calls. Apply them first; if that
+      # fails, nothing is deployed.
+      - uses: actions/setup-python@v6
+        if: github.event_name != 'pull_request' && env.SUPABASE_DB_URL != ''
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Apply database migrations
+        if: github.event_name != 'pull_request' && env.SUPABASE_DB_URL != ''
+        working-directory: .
+        run: |
+          pip install -e .
+          bsb db migrate
       - name: Deploy to Firebase Hosting
         if: github.event_name != 'pull_request' && env.FIREBASE_SERVICE_ACCOUNT != '' && env.FIREBASE_PROJECT_ID != ''
         uses: FirebaseExtended/action-hosting-deploy@v0

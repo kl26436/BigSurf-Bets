@@ -31,11 +31,26 @@ export function PosTag({ pos }: { pos: Pos | string | null }) {
   return <span className="tag">{pos ? POS_LABEL[pos as Pos] ?? pos : "–"}</span>;
 }
 
-export function StatusPill({ status }: { status: string | null | undefined }) {
+const SHORT_STATUS: Record<string, string> = { Questionable: "Q", Doubtful: "D", Out: "OUT", "Injured reserve": "IR" };
+
+/** `short` is the one- to three-letter tag used on player rows, where the full word does not fit. */
+export function StatusPill({ status, short = false }: { status: string | null | undefined; short?: boolean }) {
   const label = statusLabel(status);
   if (!label) return null;
   const tone = label === "Questionable" ? "pill--warn" : "pill--bad";
-  return <span className={`pill ${tone}`}>{label}</span>;
+  if (!short) return <span className={`pill ${tone}`}>{label}</span>;
+  return <span className={`pill ${tone}`} role="img" aria-label={label} title={label}>{SHORT_STATUS[label] ?? label.slice(0, 3).toUpperCase()}</span>;
+}
+
+/** A player's name on a row. The name gives way when space runs out; the injury tag never does. */
+export function PlayerName({ name, status, children }: { name: string; status?: string | null; children?: ReactNode }) {
+  return (
+    <p className="pname">
+      <span className="pname__text">{name}</span>
+      <StatusPill status={status} short />
+      {children}
+    </p>
+  );
 }
 
 /** Floor-to-ceiling bar: 10th–90th percentile band, middle half, median tick. */
@@ -105,6 +120,7 @@ const ICONS: Record<string, ReactNode> = {
   ban: <><circle cx="12" cy="12" r="8.500" /><path d="M6 6l12 12" /></>,
   plus: <path d="M12 5v14M5 12h14" />,
   x: <path d="M6 6l12 12M18 6L6 18" />,
+  back: <path d="M15 5l-7 7 7 7" />,
 };
 export function Icon({ name }: { name: keyof typeof ICONS | string }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true">{ICONS[name]}</svg>;

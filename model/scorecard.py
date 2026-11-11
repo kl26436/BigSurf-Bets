@@ -115,21 +115,64 @@ def projection_metrics(proj: pl.DataFrame, act: pl.DataFrame, dk_avg: pl.DataFra
 
 
 def lineup_metrics(lineups: pl.DataFrame) -> list[dict]:
-    """lineups: set_id, mode, lineup_no, actual, p10, p50, p90, sim_mean, complete (all 9 players have a result)."""
+    """lineups: set_id, mode, lineup_no, actual, p10, p50, p90, sim_mean, complete (all 9 players have a result);
+    optionally proj, label, source, entered. A lineup built by hand has no simulated
+    range: its expected score falls back to the plain projection and the range share is left out."""
     out = []
+    has = set(lineups.columns)
     for (set_id, mode), g in lineups.group_by("set_id", "mode", maintain_order=True):
         done = g.filter(pl.col("complete"))
         if done.is_empty():
             continue
         a = done["actual"].to_numpy().astype(float)
-        out.append(dict(
+        expected = pl.coalesce("sim_mean", "proj") if "proj" in has else pl.col("sim_mean")
+        avg_expected = done.select(expected.mean()).item()
+        ranged = done.filter(pl.col("p10").is_not_null() & pl.col("p90").is_not_null())
+        m = dict(
             set_id=int(set_id), mode=mode, n=g.height, n_complete=done.height,
             avg_actual=round(float(a.mean()), 2), best_actual=round(float(a.max()), 2), worst_actual=round(float(a.min()), 2),
-            avg_projected=round(float(done["sim_mean"].mean()), 2),
-            in_p10_p90=round(float(((a >= done["p10"].to_numpy()) & (a <= done["p90"].to_numpy())).mean()), 3),
-            above_p90=int((a > done["p90"].to_numpy()).sum()), below_p10=int((a < done["p10"].to_numpy()).sum()),
-        ))
+            avg_projected=None if avg_expected is None else round(float(avg_expected), 2),
+            in_p10_p90=None, above_p90=None, below_p10=None,
+        )
+        if ranged.height:
+            r = ranged["actual"].to_numpy().astype(float)
+            lo, hi = ranged["p10"].to_numpy().astype(float), ranged["p90"].to_numpy().astype(float)
+            m.update(in_p10_p90=round(float(((r >= lo) & (r <= hi)).mean()), 3),
+                     above_p90=int((r > hi).sum()), below_p10=int((r < lo).sum()))
+        for k in ("label", "source", "entered"):       # what the Results screen titles the set with
+            if k in has:
+                m[k] = g[k][0]
+        out.append(m)
     return out
+
+
+# Which lineup sets a week's scorecard reports on: what was on the Lineups screen
+# at the end of the week (the newest automatic set of each kind, and every set the
+# user asked for or built that was not archived), plus anything marked as entered.
+# Superseded automatic sets are rebuilt several times a day and would bury the rest.
+GRADED_LINEUPS_SQL = """
+select l.set_id, ls.mode, l.lineup_no, l.actual_points::float8, l.p10::float8, l.p50::float8,
+       l.p90::float8, l.sim_mean::float8, l.actual_points is not null, l.proj::float8,
+       ls.label, ls.source, ls.entered
+from bsb.lineups l join bsb.lineup_sets ls on ls.id = l.set_id
+join bsb.dfs_slates sl on sl.id = ls.slate_id
+where sl.season = %s and sl.week = %s
+  and (ls.entered
+       or (ls.archived_at is null
+           and (ls.source <> 'auto'
+                or ls.id = (select x.id from bsb.lineup_sets x
+                            where x.slate_id = ls.slate_id and x.mode = ls.mode and x.source = 'auto'
+                              and x.archived_at is null
+                            order by x.created_at desc, x.id desc limit 1))))
+order by l.set_id, l.lineup_no"""
+
+GRADED_LINEUPS_COLUMNS = ["set_id", "mode", "lineup_no", "actual", "p10", "p50", "p90", "sim_mean", "complete", "proj",
+                          "label", "source", "entered"]
+
+
+def graded_lineups(conn, season: int, week: int) -> pl.DataFrame:
+    rows = conn.execute(GRADED_LINEUPS_SQL, (season, week)).fetchall()
+    return pl.DataFrame(rows, orient="row", infer_schema_length=None, schema=GRADED_LINEUPS_COLUMNS)
 
 
 def run(conn, season: int | None = None, week: int | None = None, offline: bool = False) -> dict | None:
@@ -177,16 +220,7 @@ def run(conn, season: int | None = None, week: int | None = None, offline: bool 
                where l.set_id = x.set_id and l.lineup_no = x.lineup_no and x.n = 9""",
             (season, week),
         )
-        cur = conn.execute(
-            """select l.set_id, ls.mode, l.lineup_no, l.actual_points::float8, l.p10::float8, l.p50::float8,
-                      l.p90::float8, l.sim_mean::float8, l.actual_points is not null
-               from bsb.lineups l join bsb.lineup_sets ls on ls.id = l.set_id
-               join bsb.dfs_slates sl on sl.id = ls.slate_id
-               where sl.season = %s and sl.week = %s order by l.set_id, l.lineup_no""",
-            (season, week),
-        )
-        lu = pl.DataFrame(cur.fetchall(), orient="row", infer_schema_length=None,
-                          schema=["set_id", "mode", "lineup_no", "actual", "p10", "p50", "p90", "sim_mean", "complete"])
+        lu = graded_lineups(conn, season, week)
         metrics["lineups"] = lineup_metrics(lu) if lu.height else []
 
         # props: write the settled stat onto every price for the week, then grade the last pre-game pricing
@@ -238,7 +272,8 @@ def to_text(r: dict) -> str:
         L.append(s)
     for s in r["lineups"]:
         L.append(f"lineups set {s['set_id']} ({s['mode']}): {s['n_complete']}/{s['n']} complete · avg {s['avg_actual']} "
-                 f"(projected {s['avg_projected']}) · best {s['best_actual']} · {s['in_p10_p90']:.0%} inside the 80% range")
+                 f"(projected {s['avg_projected']}) · best {s['best_actual']}"
+                 + (f" · {s['in_p10_p90']:.0%} inside the 80% range" if s.get("in_p10_p90") is not None else ""))
     pr = r["props"]
     if pr.get("n"):
         L.append(f"props: {pr['n']} settled")

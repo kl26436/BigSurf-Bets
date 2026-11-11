@@ -90,29 +90,102 @@ const setPlayers = (setId: number, n: number): LineupPlayer[] =>
     team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status,
   }))).flat();
 
-export const sets: LineupSet[] = [
+export let sets: LineupSet[] = [
   { id: 3, created_at: hoursAgo(1.9), slate_id: 1, run_id: 9, mode: "gpp", source: "auto", entered: false, label: null, job_id: null, n_lineups: 20,
-    settings: { max_exposure: 0.5, min_unique: 3 }, summary: { players_used: 39, max_exposure_pct: 50, avg_proj: 132.9, set_best_mean: 171, set_best_p90: 198 }, on_latest_projections: true },
+    settings: { n: 20, mode: "gpp", max_exposure: 0.5, min_unique: 3, rules: { qb_stack: 1, bring_back: 0, lock: [], exclude: [] } },
+    summary: { players_used: 39, max_exposure_pct: 50, avg_proj: 132.9, set_best_mean: 171, set_best_p90: 198 }, on_latest_projections: true, archived_at: null },
   { id: 2, created_at: hoursAgo(1.9), slate_id: 1, run_id: 9, mode: "cash", source: "auto", entered: false, label: null, job_id: null, n_lineups: 3,
-    settings: { max_exposure: 0.67, min_unique: 3 }, summary: { players_used: 16, max_exposure_pct: 67, avg_proj: 135.7 }, on_latest_projections: true },
+    settings: { n: 3, mode: "cash", max_exposure: 0.67, min_unique: 3, rules: { qb_stack: 0, bring_back: 0, lock: [], exclude: [] } },
+    summary: { players_used: 16, max_exposure_pct: 67, avg_proj: 135.7 }, on_latest_projections: true, archived_at: null },
   { id: 1, created_at: hoursAgo(30), slate_id: 1, run_id: 7, mode: "gpp", source: "user", entered: true, label: "Tuesday build", job_id: 1, n_lineups: 10,
-    settings: { max_exposure: 0.4, min_unique: 3 }, summary: { players_used: 31, max_exposure_pct: 40, avg_proj: 131.2 }, on_latest_projections: false },
+    settings: { n: 10, mode: "gpp", max_exposure: 0.4, min_unique: 3, rules: { qb_stack: 1, bring_back: 1, lock: ["40001"], exclude: [] } },
+    summary: { players_used: 31, max_exposure_pct: 40, avg_proj: 131.2 }, on_latest_projections: false, archived_at: null },
 ];
-export function setDetail(setId: number): { lineups: LineupRow[]; players: LineupPlayer[] } {
-  const s = sets.find((x) => x.id === setId) ?? sets[0];
-  const players = setPlayers(s.id, s.n_lineups);
-  const lineups = Array.from({ length: s.n_lineups }, (_, k) => {
+let nextSetId = 4;
+export const listSets = () => Promise.resolve(sets.slice());
+const change = (id: number, patch: Partial<LineupSet>) => { sets = sets.map((s) => (s.id === id ? { ...s, ...patch } : s)); };
+
+type Detail = { lineups: LineupRow[]; players: LineupPlayer[] };
+const details = new Map<number, Detail>();
+function rows(setId: number, players: LineupPlayer[], n: number): LineupRow[] {
+  return Array.from({ length: n }, (_, k) => {
     const mine = players.filter((p) => p.lineup_no === k + 1);
     const proj = mine.reduce((a, p) => a + (p.dk_mean ?? 0), 0);
-    return { set_id: s.id, lineup_no: k + 1, salary: mine.reduce((a, p) => a + p.salary, 0), proj, sim_mean: proj * 0.99,
-      p10: proj * 0.78, p50: proj * 0.98, p90: proj * 1.24, p99: proj * 1.45, best_of_set_pct: 100 / s.n_lineups, actual_points: null };
+    return { set_id: setId, lineup_no: k + 1, salary: mine.reduce((a, p) => a + p.salary, 0), proj, sim_mean: proj * 0.99,
+      p10: proj * 0.78, p50: proj * 0.98, p90: proj * 1.24, p99: proj * 1.45, best_of_set_pct: 100 / n, actual_points: null };
   });
-  return { lineups, players };
+}
+function detailOf(s: LineupSet): Detail {
+  let d = details.get(s.id);
+  if (!d) {
+    const players = setPlayers(s.id, s.n_lineups);
+    d = { lineups: rows(s.id, players, s.n_lineups), players };
+    details.set(s.id, d);
+  }
+  return d;
+}
+export function setDetail(setId: number): { set: LineupSet | null; lineups: LineupRow[]; players: LineupPlayer[] } {
+  const s = sets.find((x) => x.id === setId);
+  return s ? { set: s, ...detailOf(s) } : { set: null, lineups: [], players: [] };
 }
 export function setEntered(setId: number, entered: boolean) {
-  const s = sets.find((x) => x.id === setId);
-  if (s) s.entered = entered;
+  change(setId, { entered });
   return Promise.resolve();
+}
+export function renameSet(setId: number, label: string | null) {
+  change(setId, { label: label?.trim().slice(0, 60) || null });
+  return Promise.resolve();
+}
+export function archiveSet(setId: number, archived: boolean) {
+  change(setId, { archived_at: archived ? new Date().toISOString() : null });
+  return Promise.resolve();
+}
+const ENTERED = "this set is marked as entered: archive it, or undo \"entered\" first";
+export function deleteSet(setId: number) {
+  if (sets.find((s) => s.id === setId)?.entered) return Promise.reject(new Error(ENTERED));
+  sets = sets.filter((s) => s.id !== setId);
+  details.delete(setId);
+  return Promise.resolve();
+}
+export function deleteLineup(setId: number, lineupNo: number): Promise<number> {
+  const s = sets.find((x) => x.id === setId);
+  if (!s) return Promise.reject(new Error("no such lineup set"));
+  if (s.entered) return Promise.reject(new Error(ENTERED));
+  const d = detailOf(s);
+  const lineups = d.lineups.filter((l) => l.lineup_no !== lineupNo);
+  if (lineups.length === 0) return deleteSet(setId).then(() => 0);
+  const players = d.players.filter((x) => x.lineup_no !== lineupNo);
+  details.set(setId, { lineups, players });
+  change(setId, { n_lineups: lineups.length, summary: { players_used: new Set(players.map((x) => x.dk_id)).size,
+    avg_proj: lineups.reduce((a, l) => a + (l.proj ?? 0), 0) / lineups.length } });
+  return Promise.resolve(lineups.length);
+}
+export function saveLineup(ids: string[], label?: string | null): Promise<number> {
+  const id = nextSetId++;
+  const players: LineupPlayer[] = ids.map((dk, i) => {
+    const p = pool.find((x) => x.dk_id === dk)!;
+    return { set_id: id, lineup_no: 1, slot_no: i, slot: SLOTS[i], dk_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos,
+      team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status };
+  });
+  const proj = players.reduce((a, x) => a + (x.dk_mean ?? 0), 0);
+  details.set(id, { players, lineups: [{ set_id: id, lineup_no: 1, salary: players.reduce((a, x) => a + x.salary, 0), proj, sim_mean: null,
+    p10: null, p50: null, p90: null, p99: null, best_of_set_pct: null, actual_points: null }] });
+  sets = [{ id, created_at: new Date().toISOString(), slate_id: 1, run_id: 9, mode: "manual", source: "manual", entered: false,
+    label: label?.trim() || null, job_id: null, n_lineups: 1, settings: {}, summary: {}, on_latest_projections: true, archived_at: null }, ...sets];
+  return Promise.resolve(id);
+}
+/** What a finished build looks like, so the sample app shows the whole flow. */
+function sampleBuild(payload: Record<string, unknown>, jobId: number): number {
+  const id = nextSetId++;
+  const n = Math.max(1, Math.min(150, Number(payload.n ?? 20)));
+  const mode = payload.mode === "cash" ? "cash" : "gpp";
+  const fresh: LineupSet = { id, created_at: new Date().toISOString(), slate_id: 1, run_id: 9, mode, source: "user", entered: false,
+    label: (payload.label as string | undefined) ?? null, job_id: jobId, n_lineups: n,
+    settings: { n, mode, max_exposure: payload.max_exposure, min_unique: payload.min_unique,
+      rules: { qb_stack: payload.qb_stack, bring_back: payload.bring_back, lock: payload.lock ?? [], exclude: payload.exclude ?? [] } },
+    summary: { players_used: Math.min(40, 9 + n), avg_proj: 131.5 }, on_latest_projections: true, archived_at: null };
+  sets = [fresh, ...sets];
+  return id;
 }
 
 const q = (g: Game, market: LineQuote["market"], outcome: LineQuote["outcome"], number: number, line: number | null, book: string, american: number, fair: number, best: boolean, arb: number): LineQuote => {
@@ -170,13 +243,28 @@ export const waiverRecs: WaiverRec[] = freeAgents.slice(0, 6).map((p, i) => ({
 }));
 
 let jobList: Job[] = [{ id: 1, created_at: hoursAgo(30), kind: "build_lineups", payload: { n: 10 }, status: "done", started_at: hoursAgo(30),
-  finished_at: hoursAgo(29.9), result: { set_id: 1, n_lineups: 10 }, error: null }];
+  finished_at: hoursAgo(29.9), result: { set_id: 1, n_lineups: 10 }, error: null, dismissed_at: null }];
 export const jobs = () => Promise.resolve(jobList);
+/** Nothing is connected in the sample app. A lineup build is acted out (a few
+ *  seconds, then sample lineups) so the flow can be seen; everything else says so. */
 export function addJob(kind: string, payload: Record<string, unknown>) {
-  const job: Job = { id: jobList.length + 1, created_at: new Date().toISOString(), kind, payload, status: "needs_setup", started_at: null, finished_at: null,
-    result: null, error: "Sample data: nothing is connected, so nothing was started." };
+  const id = Math.max(0, ...jobList.map((j) => j.id)) + 1;
+  const acted = kind === "build_lineups";
+  const now = new Date().toISOString();
+  const job: Job = { id, created_at: now, kind, payload, status: acted ? "running" : "needs_setup", started_at: acted ? now : null, finished_at: null,
+    result: null, error: acted ? null : "Sample data: nothing is connected, so nothing was started.", dismissed_at: null };
   jobList = [job, ...jobList];
+  if (acted) {
+    setTimeout(() => {
+      const setId = sampleBuild(payload, id);
+      jobList = jobList.map((j) => (j.id === id ? { ...j, status: "done", finished_at: new Date().toISOString(), result: { set_id: setId, n_lineups: payload.n } } : j));
+    }, 3000);
+  }
   return Promise.resolve(job.id);
+}
+export function dismissJob(id: number) {
+  jobList = jobList.map((j) => (j.id === id ? { ...j, dismissed_at: new Date().toISOString() } : j));
+  return Promise.resolve();
 }
 export function setOverride(playerId: string, mean: number | null) {
   const p = pool.find((x) => x.player_id === playerId);

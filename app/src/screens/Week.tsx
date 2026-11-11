@@ -2,6 +2,8 @@ import { Link } from "react-router-dom";
 import { Empty, ErrorNote, Fresh, Loading } from "../components/ui";
 import { useGames, useHealth, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
+import { visibleSets } from "../lib/lineup";
+import { useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
 import type { FeedHealth, Job } from "../lib/types";
@@ -34,6 +36,7 @@ export function Week() {
   const sets = useSets(slate?.id);
   const jobs = useJobs();
   const ask = useAsk();
+  useTitle("This week");
   if (health.isLoading || games.isLoading) return <Loading />;
   if (health.error) return <ErrorNote error={health.error} />;
 
@@ -43,7 +46,8 @@ export function Week() {
   const byTotal = [...(games.data ?? [])].sort((a, b) => (b.total_line ?? 0) - (a.total_line ?? 0));
   const withPoints = (pool.data ?? []).filter((p) => p.dk_mean != null).length;
   const questionable = (pool.data ?? []).filter((p) => p.dk_mean != null && p.dk_status === "Q").length;
-  const recent = (jobs.data ?? []).slice(0, 4);
+  const recent = (jobs.data ?? []).filter((j) => !j.dismissed_at).slice(0, 4);
+  const shown = sets.data ? visibleSets(sets.data) : null;      // the same sets the Lineups screen lists
 
   return (
     <div className="stack">
@@ -69,7 +73,7 @@ export function Week() {
               <dl className="kv kv--3">
                 <div><dt>Players</dt><dd className="big num">{withPoints || "–"}</dd></div>
                 <div><dt>Questionable</dt><dd className="big num">{questionable}</dd></div>
-                <div><dt>Lineup sets</dt><dd className="big big--accent num">{sets.data?.length ?? "–"}</dd></div>
+                <div><dt>Lineup sets</dt><dd className="big big--accent num">{shown ? shown.auto.length + shown.mine.length : "–"}</dd></div>
               </dl>
               <p className="small muted">Salaries loaded {ago(slate.imported_at)}. {withPoints} of {slate.n_players} players have expected points; the rest are out or haven't played this season.</p>
               <div className="inline">

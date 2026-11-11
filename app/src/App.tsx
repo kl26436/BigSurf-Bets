@@ -1,7 +1,8 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Mark } from "./components/Mark";
 import { Icon, Loading } from "./components/ui";
-import { DEMO, supabase, useClaim, useSession, useWhoAmI } from "./lib/api";
+import { DEMO, supabase, useClaim, useJobEffects, useSession, useWhoAmI } from "./lib/api";
+import { useAppNavigation, useGoUp } from "./lib/nav";
 import { useStore } from "./lib/store";
 import { Bets } from "./screens/Bets";
 import { Builder } from "./screens/Builder";
@@ -28,8 +29,25 @@ const TABS = [
   { to: "/more", label: "More", icon: "more" },
 ];
 
+// Screens below a tab: where "back" goes from each. The installed iPhone app has
+// no browser bar, so every one of them needs a way out that is on the screen.
+const PARENTS = [
+  { under: /^\/lineups\/.+/, to: "/lineups", label: "Lineups" },
+  { under: /^\/more\/.+/, to: "/more", label: "More" },
+];
+
 function Shell() {
   const { toast } = useStore();
+  const { pathname } = useLocation();
+  const goUp = useGoUp();
+  useAppNavigation();
+  useJobEffects();
+  const parent = PARENTS.find((p) => p.under.test(pathname));
+  const back = parent && (
+    <button className="back" onClick={() => goUp(parent.to)} aria-label={`Back to ${parent.label}`}>
+      <Icon name="back" />{parent.label}
+    </button>
+  );
   return (
     <div className="app">
       <aside className="side">
@@ -44,9 +62,14 @@ function Shell() {
         </nav>
       </aside>
       <div className="column">
-        <header className="header"><Brand /><span className="header__spacer" /></header>
+        <header className="header">
+          {back ?? <Brand />}
+          <span className="header__spacer" />
+          {back && <Mark className="header__mark" />}
+        </header>
         {DEMO && <div className="banner" role="status">Sample data — connect the database to see real numbers</div>}
         <main className="main">
+          {back && <div className="back-row">{back}</div>}
           <Routes>
             <Route path="/" element={<Week />} />
             <Route path="/players" element={<Players />} />
