@@ -252,7 +252,24 @@ export interface Settings {
   stake_fraction: number;   // share of the full Kelly stake, 0–1
   max_stake_pct: number;    // never more than this share of the balance on one bet
   books: string[];          // sportsbooks the user can actually bet at
+  notify_email_on: boolean; // e-mail alerts as well as pop-ups
+  notify_email: string;     // where to; empty = the address you sign in with
 }
+
+/** Something that changed: a player ruled out, a status, expected points. */
+export interface AppEvent {
+  id: number;
+  created_at: string;
+  kind: "scratch" | "status" | "points";
+  severity: "info" | "alert";
+  title: string;
+  body: string | null;
+  url: string | null;
+}
+/** A device signed up for pop-ups. `id` is the SHA-256 of its push address. */
+export interface PushDevice { id: string; device: string | null; created_at: string; last_ok_at: string | null; failed_at: string | null; failures: number }
+/** One alert that was sent, or wasn't. */
+export interface SentNote { id: number; at: string; channel: "push" | "email"; target: string; status: "sent" | "failed" | "skipped"; error: string | null; kind: string; title: string }
 
 export const DEFAULT_SETTINGS: Settings = {
   balance_dfs: 300,
@@ -260,6 +277,8 @@ export const DEFAULT_SETTINGS: Settings = {
   stake_fraction: 0.25,
   max_stake_pct: 0.05,
   books: ["betmgm", "circa", "draftkings", "fanduel", "caesars"],
+  notify_email_on: false,
+  notify_email: "",
 };
 
 export interface WaiverTeam { roster_id: number; owner: string; is_me: boolean; budget: number; mean: number; chop: number; win: number }

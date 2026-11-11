@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 13
+    assert len(db.migrate(url)) >= 14
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -105,7 +105,8 @@ class As:
 
 VIEWS = ["app_feed_health", "app_model_runs", "app_slates", "app_pool", "app_projections", "app_games", "app_lineup_sets",
          "app_lineups", "app_lineup_players", "app_line_quotes", "app_prop_edges", "app_scorecards", "app_player_log",
-         "app_my_roster", "app_free_agents", "app_jobs", "app_overrides", "app_dk_entries", "app_bets"]
+         "app_my_roster", "app_free_agents", "app_jobs", "app_overrides", "app_dk_entries", "app_bets",
+         "app_events", "app_push_devices", "app_notifications"]
 
 
 def test_every_table_has_row_level_security(db_url):
@@ -144,7 +145,8 @@ def test_signed_in_stranger_sees_no_rows_and_cannot_write(db_url):
                      "public.bsb_delete_lineup(1, 1)", "public.bsb_dismiss_job(1)", "public.bsb_set_lineups_entered(1, '{1}', true)",
                      "public.bsb_replace_lineup(1, 1, '{a}')", "public.bsb_import_dk_entries(1, '[]'::jsonb)",
                      "public.bsb_assign_entries('[]'::jsonb)", "public.bsb_log_bet('{}'::jsonb)", "public.bsb_settle_bet(1, 'won')",
-                     "public.bsb_delete_bet(1)", "public.bsb_grade_bets()"]:
+                     "public.bsb_delete_bet(1)", "public.bsb_grade_bets()", "public.bsb_push_key()",
+                     "public.bsb_save_push_subscription('{}'::jsonb)", "public.bsb_delete_push_subscription('x')"]:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(f"select {call}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -696,3 +698,265 @@ def test_waiver_bids_run_end_to_end_and_only_members_read_them(db_url):
         run = c.execute("select week, teams_left, budget, jsonb_array_length(teams) from public.app_waiver_run").fetchone()
         assert run == (10, 3, 700, 3)
         assert c.execute("select count(*) from public.app_waiver_recs").fetchone()[0] == n
+
+
+# ---- what changed, and telling people -----------------------------------------------------
+SUB = {"endpoint": "https://push.example.com/send/abc123", "keys": {"p256dh": "BPublicKeyOfTheDevice", "auth": "c2VjcmV0"}, "device": "iPhone"}
+
+
+def _member(url: str, settings: dict | None = None) -> None:
+    """ALICE has access, signs in with an address, and has chosen her notification settings."""
+    with psycopg.connect(url) as c:
+        c.execute("insert into bsb.app_users (user_id, email, role) values (%s, 'alice@example.com', 'owner') "
+                  "on conflict (user_id) do update set email = excluded.email", (ALICE,))
+        c.execute("insert into bsb.user_settings (user_id, settings) values (%s, %s::jsonb) "
+                  "on conflict (user_id) do update set settings = excluded.settings", (ALICE, json.dumps(settings or {})))
+        c.commit()
+
+
+def _clear_notify(url: str) -> None:
+    with psycopg.connect(url) as c:
+        c.execute("delete from bsb.events")
+        c.execute("delete from bsb.push_subscriptions")
+        c.execute("delete from bsb.player_status_snapshots")
+        c.execute("update bsb.dfs_salaries set raw = jsonb_set(raw, '{Status}', '\"\"')")
+        c.commit()
+
+
+class Outbox:
+    """Stands in for the push service and the mail server."""
+
+    def __init__(self, gone: bool = False, mail_ok: bool = True):
+        self.pushes, self.mails, self.gone, self.mail_ok = [], [], gone, mail_ok
+
+    def push(self, sub, payload, private_key):
+        from notify.send import Sent
+        self.pushes.append((sub["endpoint"], payload))
+        return Sent(False, "push service answered 410", gone=True) if self.gone else Sent(True)
+
+    def email(self, to, subject, body, url="/"):
+        from notify.send import Sent
+        self.mails.append((to, subject, body, url))
+        return Sent(True) if self.mail_ok else Sent(False, "SMTPAuthenticationError: bad password")
+
+
+def test_a_device_signs_up_for_pop_ups_and_only_its_owner_sees_it(db_url):
+    from notify import send
+
+    _clear_notify(db_url)
+    _member(db_url)
+    with psycopg.connect(db_url) as c:
+        c.execute("delete from bsb.app_config where key like 'vapid%'")
+        c.commit()
+        with As(db_url, "authenticated", ALICE) as a:
+            assert a.execute("select public.bsb_push_key()").fetchone()[0] is None        # the pipeline has not made the keys yet
+        private, public = send.ensure_keys(c)
+        assert send.ensure_keys(c) == (private, public)                                    # made once
+        assert len(public) == 87 and len(private) == 43                                    # an uncompressed P-256 point and a 32-byte scalar
+    with As(db_url, "authenticated", ALICE) as a:
+        assert a.execute("select public.bsb_push_key()").fetchone()[0] == public
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            a.execute("select value from bsb.app_config")                                 # the private half stays out of reach
+        for bad in ({}, {"endpoint": "http://plain.example.com/x", "keys": SUB["keys"]}, {"endpoint": SUB["endpoint"], "keys": {"auth": "x"}}):
+            with pytest.raises(psycopg.errors.RaiseException, match="not a push subscription"):
+                a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps(bad),))
+        a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps(SUB),))
+        a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps({**SUB, "device": "iPhone 16"}),))   # the same device again
+        rows = a.execute("select id, device, last_ok_at from public.app_push_devices").fetchall()
+        assert len(rows) == 1 and rows[0][1] == "iPhone 16"
+        assert rows[0][0] == "e6f1e563ad6145546e8846b0788d243bf8bb43d19dcd717437303d8370963c17"          # SHA-256 of the address: app/src/lib/push.test.ts computes the same
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            a.execute("select p256dh, auth from bsb.push_subscriptions")                   # the keys are never handed back
+        assert a.execute("select public.bsb_delete_push_subscription(null, 'nope')").fetchone()[0] == 0
+        assert a.execute("select public.bsb_delete_push_subscription(null, %s)", (rows[0][0],)).fetchone()[0] == 1
+        assert a.execute("select count(*) from public.app_push_devices").fetchone()[0] == 0
+        a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps(SUB),))
+    with psycopg.connect(db_url) as c:                                                     # someone else with access sees none of it
+        c.execute("insert into bsb.app_users (user_id, email) values (%s, 'bob@example.com')", (BOB,))
+        c.commit()
+    try:
+        with As(db_url, "authenticated", BOB) as b:
+            assert b.execute("select count(*) from public.app_push_devices").fetchone()[0] == 0
+            assert b.execute("select public.bsb_delete_push_subscription(%s)", (SUB["endpoint"],)).fetchone()[0] == 0
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("delete from bsb.app_users where user_id = %s", (BOB,))
+            c.commit()
+    _clear_notify(db_url)
+
+
+def test_a_player_ruled_out_of_an_entered_lineup_is_recorded_once_and_sent(db_url):
+    from notify import run as notify_run
+
+    _clear_notify(db_url)
+    _member(db_url, {"notify_email_on": True})
+    with psycopg.connect(db_url) as c:
+        c.execute("update bsb.lineups set entered = false")
+        c.execute("update bsb.lineup_sets set entered = false")
+        c.commit()
+    sid = _stored_set(db_url, "user", n=2, entered=True, label="Sunday main")
+    _stored_set(db_url, "user", n=1)                                                       # the same nine, not entered: must not count
+    with As(db_url, "authenticated", ALICE) as a:
+        a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps(SUB),))
+    with psycopg.connect(db_url) as c:
+        nine = c.execute("select site_player_id, player_id, player_name, position, team from bsb.lineup_players where set_id = %s and lineup_no = 1 order by slot_no", (sid,)).fetchall()
+        rb, wr, te, dst = nine[1], nine[4], nine[7], nine[8]
+        snap = "insert into bsb.player_status_snapshots (player_id, source_player_id, injury_status, captured_at) values (%s, 's', %s, now() - %s::interval)"
+
+        box = Outbox()
+        assert notify_run.run(c, box.push, box.email)["events"] == 0 and box.pushes == []      # everybody is playing
+
+        c.execute(snap, (rb[1], "Out", "1 minute"))
+        c.commit()
+        out = notify_run.run(c, box.push, box.email)
+        assert out == {"events": 1, "to_send": 1, "push_sent": 1, "push_failed": 0, "email_sent": 1, "email_failed": 0}
+        endpoint, payload = box.pushes[0]
+        assert endpoint == SUB["endpoint"] and payload["title"] == f"{rb[2]} is out" and payload["url"] == "/lineups/swap"
+        assert "2 entered lineups" in payload["body"] and rb[4] in payload["body"] and payload["body"].endswith("Open the app to swap him out.")
+        assert box.mails == [("alice@example.com", f"{rb[2]} is out", payload["body"], "/lineups/swap")]   # the sign-in address, by default
+        assert notify_run.run(c, box.push, box.email)["events"] == 0 and len(box.pushes) == 1    # the same scratch is not sent twice
+
+        with As(db_url, "authenticated", ALICE) as a:
+            assert a.execute("select kind, severity, title, url from public.app_events").fetchall() == [("scratch", "alert", f"{rb[2]} is out", "/lineups/swap")]
+            assert a.execute("select body from public.app_events").fetchone()[0].endswith("2 entered lineups.")       # in the app's list there is no "open the app"
+            sent = a.execute("select channel, target, status from public.app_notifications order by channel").fetchall()
+            assert sent == [("email", "a…e@example.com", "sent"), ("push", "iPhone", "sent")]
+            assert a.execute("select last_ok_at is not null from public.app_push_devices").fetchone()[0] is True
+
+        # three more at once (an inactives list): DraftKings' own tag, a doubtful, and a defense gone from the salary file → one message
+        c.execute("update bsb.dfs_salaries set raw = jsonb_set(raw, '{Status}', '\"O\"') where slate_id = 1 and site_player_id = %s", (wr[0],))
+        c.execute(snap, (te[1], "Doubtful", "1 minute"))
+        saved = c.execute("delete from bsb.dfs_salaries where slate_id = 1 and site_player_id = %s returning *", (dst[0],)).fetchone()
+        cols = [d.name for d in c.execute("select * from bsb.dfs_salaries limit 0").description]
+        c.commit()
+        out = notify_run.run(c, box.push, box.email)
+        assert (out["events"], out["to_send"], out["push_sent"], out["email_sent"]) == (3, 3, 1, 1)
+        assert box.pushes[-1][1]["title"] == "3 changes to your lineups" and box.pushes[-1][1]["url"] == "/lineups/swap"
+        for name in (wr[2], te[2], dst[2]):
+            assert name in box.pushes[-1][1]["body"]
+        assert f"{te[2]} is doubtful" in box.pushes[-1][1]["body"]
+        c.execute(f"insert into bsb.dfs_salaries ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))})",
+                  [json.dumps(v) if isinstance(v, dict) else v for v in saved])
+        c.execute(snap, (te[1], "Out", "0 minutes"))                                       # doubtful → out is news again
+        c.commit()
+        assert notify_run.run(c, box.push, box.email)["to_send"] == 1 and box.pushes[-1][1]["title"] == f"{te[2]} is out"
+
+        # a device that no longer accepts pop-ups is forgotten; a mail failure is logged with its reason
+        c.execute("delete from bsb.events where dedupe_key like %s", (f"scratch:1:{rb[0]}:%",))
+        c.commit()
+        gone = Outbox(gone=True, mail_ok=False)
+        out = notify_run.run(c, gone.push, gone.email)
+        assert (out["push_failed"], out["email_failed"]) == (1, 1)
+        assert c.execute("select count(*) from bsb.push_subscriptions").fetchone()[0] == 0
+        assert c.execute("select status, error from bsb.notifications where channel = 'email' order by id desc limit 1").fetchone() == ("failed", "SMTPAuthenticationError: bad password")
+
+        # once his game has started nothing can be swapped, so nothing is sent
+        c.execute("delete from bsb.events")
+        c.execute("update bsb.games set kickoff_at = now() - interval '5 minutes' where game_id = (select game_id from bsb.dfs_salaries where slate_id = 1 and site_player_id = %s)", (rb[0],))
+        c.commit()
+        quiet = Outbox()
+        titles = [e.title for e in __import__("notify.detect", fromlist=["x"]).scratches(c)]
+        assert f"{rb[2]} is out" not in titles
+        c.rollback()
+    with psycopg.connect(db_url) as c:
+        kick = c.execute("select max(kickoff_at) from bsb.games where season = 2026 and week = 10").fetchone()[0]
+        c.execute("update bsb.games set kickoff_at = %s where kickoff_at < now() and season = 2026 and week = 10", (kick,))
+        c.execute("update bsb.lineups set entered = false where set_id = %s", (sid,))
+        c.execute("update bsb.lineup_sets set entered = false where id = %s", (sid,))
+        c.commit()
+    assert quiet.pushes == []
+    _clear_notify(db_url)
+
+
+def test_missing_projections_for_the_whole_week_are_not_mistaken_for_scratches(db_url):
+    from notify import detect
+
+    _clear_notify(db_url)
+    sid = _stored_set(db_url, "user", n=1, entered=True)
+    try:
+        with psycopg.connect(db_url) as c:
+            c.execute("create temp table keep as select * from bsb.projections")
+            c.execute("delete from bsb.projections where position <> 'DST'")              # a failed run: almost nobody has expected points
+            assert detect.scratches(c) == []
+            c.execute("delete from bsb.projections")
+            c.execute("insert into bsb.projections select * from keep")
+            c.execute("delete from bsb.projections where player_id = (select player_id from bsb.lineup_players where set_id = %s and slot_no = 1)", (sid,))
+            assert [e.title.split(" is ")[1] for e in detect.scratches(c)] == ["no longer expected to play"]   # one player dropped by a healthy run
+            c.rollback()
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("update bsb.lineups set entered = false where set_id = %s", (sid,))
+            c.execute("update bsb.lineup_sets set entered = false where id = %s", (sid,))
+            c.commit()
+
+
+def test_status_changes_and_points_moves_fill_the_what_changed_list(db_url):
+    from notify import detect
+    from notify import run as notify_run
+
+    _clear_notify(db_url)
+    _member(db_url)
+    sid = _stored_set(db_url, "user", n=1, entered=True)
+    with As(db_url, "authenticated", ALICE) as a:
+        a.execute("select public.bsb_save_push_subscription(%s::jsonb)", (json.dumps(SUB),))
+    snap = "insert into bsb.player_status_snapshots (player_id, source_player_id, injury_status, captured_at) values (%s, 's', %s, now() - %s::interval)"
+    try:
+        with psycopg.connect(db_url) as c:
+            mine = c.execute("select player_id, player_name from bsb.lineup_players where set_id = %s and slot_no = 0", (sid,)).fetchone()
+            star, bench = (c.execute(
+                f"select player_id, name from public.app_pool where dk_mean {op} 8 and pos = 'WR' and player_id not in (select player_id from bsb.lineup_players where set_id = %s) order by dk_mean {order} limit 1",
+                (sid,)).fetchone() for op, order in ((">=", "desc"), ("<", "asc")))
+            for pid in (mine[0], star[0], bench[0]):
+                c.execute(snap, (pid, None, "2 hours"))
+                c.execute(snap, (pid, "Questionable", "1 minute"))
+            c.execute(snap, (star[0], None, "3 hours"))                                    # older history changes nothing
+            # a second projections run: the same numbers, one player four points higher
+            run2 = c.execute("insert into bsb.model_runs (model_version, season, week, trained_seasons) values ('t', 2026, 10, '{2025}') returning id").fetchone()[0]
+            cols = [d.name for d in c.execute("select * from bsb.projections limit 0").description if d.name != "run_id"]
+            c.execute(f"insert into bsb.projections (run_id, {', '.join(cols)}) select %s, {', '.join(cols)} from bsb.projections where run_id = 1", (run2,))
+            c.execute("update bsb.projections set dk_mean = dk_mean + 4 where run_id = %s and player_id = %s", (run2, star[0]))
+            c.commit()
+
+            events = {e.dedupe_key.split(":")[0] + ":" + (e.player_id or ""): e for e in detect.find_events(c)}
+            assert set(events) == {f"status:{mine[0]}", f"status:{star[0]}", f"points:{star[0]}"}      # the bench player is not worth a line
+            assert events[f"status:{mine[0]}"].title == f"{mine[1]} is questionable" and events[f"status:{mine[0]}"].notify is True
+            assert "lineup you entered" in events[f"status:{mine[0]}"].body
+            assert events[f"status:{star[0]}"].notify is False                                          # listed, not sent: he is not in a lineup
+            assert "→" in events[f"points:{star[0]}"].title and events[f"points:{star[0]}"].body.endswith("Up 4.0 since the last run.")
+
+            box = Outbox()
+            out = notify_run.run(c, box.push, box.email)
+            assert (out["events"], out["to_send"], out["push_sent"], out["email_sent"]) == (3, 1, 1, 0)   # e-mail is off until switched on
+            assert box.pushes[0][1]["title"] == f"{mine[1]} is questionable" and box.mails == []
+            with As(db_url, "authenticated", ALICE) as a:
+                assert a.execute("select count(*), count(*) filter (where kind = 'points') from public.app_events").fetchone() == (3, 1)
+
+            # cleared again → a line saying so
+            c.execute(snap, (star[0], None, "0 minutes"))
+            c.commit()
+            cleared = [e for e in detect.status_changes(c) if e.player_id == star[0]]
+            assert cleared[0].title == f"{star[1]} is off the injury report" and cleared[0].body.endswith("He was questionable.")
+
+            # "send me a test": to that person only, and never in the list
+            out = notify_run.test(c, ALICE, box.push, box.email)
+            assert out["push_sent"] == 1 and out["devices"] == 1 and out["email_on"] is False
+            assert box.pushes[-1][1]["title"] == "Big Surf Bets: test"
+            with As(db_url, "authenticated", ALICE) as a:
+                assert a.execute("select count(*) from public.app_events where kind = 'test'").fetchone()[0] == 0
+                assert a.execute("select count(*) from public.app_notifications where kind = 'test'").fetchone()[0] == 1
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("delete from bsb.model_runs where id > 1")
+            c.execute("update bsb.lineups set entered = false where set_id = %s", (sid,))
+            c.execute("update bsb.lineup_sets set entered = false where id = %s", (sid,))
+            c.commit()
+        _clear_notify(db_url)
+
+
+def test_the_app_can_ask_for_a_test_notification(db_url):
+    _member(db_url)
+    with As(db_url, "authenticated", ALICE) as a:
+        job = a.execute("select public.bsb_request_job('notify_test')").fetchone()[0]
+    with psycopg.connect(db_url) as c:
+        kind, status, error = c.execute("select kind, status, error from bsb.app_jobs where id = %s", (job,)).fetchone()
+        assert kind == "notify_test" and status == "needs_setup" and "github_pat" in error      # no token in the test database: saved, not started

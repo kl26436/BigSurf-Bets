@@ -26,7 +26,8 @@ export default defineConfig({
           { src: "/icons/web-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: { navigateFallback: "/index.html", globPatterns: ["**/*.{js,css,html,svg,png,woff2}"] },
+      // push-sw.js adds the pop-up handlers to the generated service worker
+      workbox: { navigateFallback: "/index.html", globPatterns: ["**/*.{js,css,html,svg,png,woff2}"], globIgnores: ["push-sw.js"], importScripts: ["/push-sw.js"] },
     }),
   ],
   test: { environment: "node", include: ["src/**/*.test.ts"] },

@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Empty, ErrorNote, Facts, Fresh, Icon, Loading } from "../components/ui";
-import { useBets, useEntries, useGames, useHealth, useJobs, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
+import { useBets, useEntries, useEvents, useGames, useHealth, useJobs, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
 import { visibleSets } from "../lib/lineup";
 import { useTitle } from "../lib/nav";
@@ -16,7 +17,7 @@ const STATE: Record<FeedHealth["state"], { label: string; tone: string }> = {
 };
 export const JOB_NAME: Record<string, string> = {
   build_lineups: "Lineup build", import_slate: "Salary upload", refresh_status: "Player status check",
-  refresh_odds: "Price refresh", refresh_stats: "Stats refresh", project: "Expected points re-run",
+  refresh_odds: "Price refresh", refresh_stats: "Stats refresh", project: "Expected points re-run", notify_test: "Test notification",
 };
 export const JOB_STATE: Record<Job["status"], { label: string; tone: string }> = {
   queued: { label: "Queued", tone: "pill--warn" }, dispatched: { label: "Starting", tone: "pill--warn" }, running: { label: "Running", tone: "pill--warn" },
@@ -44,6 +45,8 @@ export function Week() {
   const settings = useSettings();
   const bets = useBets();
   const scratches = useScratches(slate, sets.data ?? []);
+  const events = useEvents();
+  const [allEvents, setAllEvents] = useState(false);
   useTitle("This week");
   if (health.isLoading || games.isLoading) return <Loading />;
   if (health.error) return <ErrorNote error={health.error} />;
@@ -68,6 +71,7 @@ export function Week() {
     openBets: (bets.data ?? []).filter((b) => b.result === "open").length,
   });
   const next = nextStep(steps);
+  const changed = events.data ?? [];
 
   return (
     <div className="stack">
@@ -82,6 +86,22 @@ export function Week() {
         <ol className="steps">
           {steps.map((x) => <StepRow key={x.key} step={x} next={next?.key === x.key} />)}
         </ol>
+      </section>
+
+      <section aria-label="What changed">
+        <div className="card__head"><h2 className="h2">What changed</h2>
+          {changed.length > 0 && <span className="small muted">latest {ago(changed[0].created_at)}</span>}</div>
+        {changed.length === 0 ? <Empty title="Nothing new" why="Players ruled out, injury tags and expected points that moved are listed here as they happen." /> : (
+          <div className="card">
+            {changed.slice(0, allEvents ? changed.length : 5).map((e) => (
+              <Link className="rowline rowline--tap" key={e.id} to={e.url ?? "/"}>
+                <div className="grow"><p className={`strong ${e.severity === "alert" ? "bad" : ""}`}>{e.title}</p>{e.body && <p className="small muted">{e.body}</p>}</div>
+                <span className="small muted right">{ago(e.created_at)}</span>
+              </Link>
+            ))}
+          </div>
+        )}
+        {changed.length > 5 && <button className="btn btn--sm btn--quiet" onClick={() => setAllEvents(!allEvents)}>{allEvents ? "Show fewer" : `Show all ${changed.length}`}</button>}
       </section>
 
       <div className="cols cols--2">

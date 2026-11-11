@@ -2,8 +2,8 @@
 // number here is invented; the app labels the whole session "Sample data".
 import { SLOTS } from "./lineup";
 import {
-  DEFAULT_SETTINGS, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
-  type LineupSet, type PoolPlayer, type Pos, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
+  DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  type LineupSet, type PoolPlayer, type Pos, type PropEdge, type PushDevice, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun,
 } from "./types";
 
@@ -424,3 +424,27 @@ export function deleteBet(id: number): Promise<void> {
   return Promise.resolve();
 }
 export const gradeBets = () => Promise.resolve(0);
+
+// ---- what changed, and pop-ups ------------------------------------------------------
+const outNow = pool.find((p) => p.dk_status === "OUT");
+const tagged = pool.filter((p) => p.dk_status === "Q" && (p.dk_mean ?? 0) > 9).slice(0, 2);
+const mover = pool.find((p) => p.pos === "WR" && (p.dk_mean ?? 0) > 15);
+export const events: AppEvent[] = [
+  ...(outNow ? [{ id: 4, created_at: hoursAgo(0.4), kind: "scratch" as const, severity: "alert" as const, title: `${outNow.name} is out`,
+    body: `${outNow.name} (${outNow.team}) is in 4 entered lineups.`, url: "/lineups/swap" }] : []),
+  ...tagged.map((p, i) => ({ id: 3 - i, created_at: hoursAgo(3 + i * 5), kind: "status" as const, severity: "info" as const, title: `${p.name} is questionable`,
+    body: `${p.team}. He had no tag before.`, url: "/players" })),
+  ...(mover ? [{ id: 1, created_at: hoursAgo(9), kind: "points" as const, severity: "info" as const,
+    title: `${mover.name}: ${((mover.dk_mean ?? 0) - 3.4).toFixed(1)} → ${(mover.dk_mean ?? 0).toFixed(1)} expected`, body: `${mover.team}. Up 3.4 since the last run.`, url: "/players" }] : []),
+];
+let devices: PushDevice[] = [];
+export const listDevices = () => Promise.resolve(devices.slice());
+export function saveDevice(device: string): Promise<void> {
+  devices = [{ id: "sample", device, created_at: new Date().toISOString(), last_ok_at: null, failed_at: null, failures: 0 }];
+  return Promise.resolve();
+}
+export function deleteDevice(): Promise<number> {
+  const n = devices.length;
+  devices = [];
+  return Promise.resolve(n);
+}

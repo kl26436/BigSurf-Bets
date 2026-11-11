@@ -22,6 +22,7 @@ edges_app = typer.Typer(no_args_is_help=True, help="Market edges: props and game
 lineups_app = typer.Typer(no_args_is_help=True, help="DraftKings lineup optimizer (needs the [model] extra)")
 app_app = typer.Typer(no_args_is_help=True, help="Work the web app asks for (bsb.app_jobs)")
 league_app = typer.Typer(no_args_is_help=True, help="Sleeper guillotine league: waiver bids (needs the [model] extra)")
+notify_app = typer.Typer(no_args_is_help=True, help="What changed, and telling the people who asked (pop-ups and e-mail)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
 app.add_typer(sleeper_app, name="sleeper")
@@ -32,6 +33,7 @@ app.add_typer(lineups_app, name="lineups")
 app.add_typer(edges_app, name="edges")
 app.add_typer(app_app, name="app")
 app.add_typer(league_app, name="league")
+app.add_typer(notify_app, name="notify")
 
 log = logging.getLogger("bsb")
 
@@ -532,14 +534,14 @@ def app_run_job(job_id: int):
     with _db.connect(settings().db_url) as conn:
         row = conn.execute(
             """update bsb.app_jobs set status = 'running', started_at = now()
-               where id = %s and status in ('queued', 'dispatched', 'needs_setup') returning kind, payload""",
+               where id = %s and status in ('queued', 'dispatched', 'needs_setup') returning kind, payload, user_id::text""",
             (job_id,),
         ).fetchone()
         conn.commit()
         if not row:
             typer.echo(f"job {job_id}: not found or already handled")
             return
-        kind, payload = row
+        kind, payload, user_id = row
         try:
             if kind == "build_lineups":
                 from optimizer.jobs import build_lineups
@@ -555,6 +557,11 @@ def app_run_job(job_id: int):
                     f.write_text(text, encoding="utf-8")
                     n = import_csv(conn, f, slate_name=name)
                 result = {"rows": n, "name": name}
+            elif kind == "notify_test":
+                from notify.run import test as notify_test
+                if not user_id:
+                    raise ValueError("the request does not say who asked")
+                result = notify_test(conn, user_id)
             else:
                 raise ValueError(f"job kind {kind!r} is run by its own workflow")
             conn.execute(
@@ -588,6 +595,35 @@ def app_finish_job(job_id: int, ok: bool = typer.Option(True, "--ok/--failed")):
             ("done" if ok else "failed", ok, job_id),
         )
         conn.commit()
+
+
+@notify_app.command("run")
+def notify_run():
+    """Record what changed since the last look and send the alerts people asked for."""
+    from notify.run import run
+    with _db.connect(settings().db_url) as conn:
+        r = run(conn)
+    typer.echo(f"{r['events']} new changes, {r['to_send']} worth sending → pop-ups {r['push_sent']} sent / {r['push_failed']} failed, "
+               f"e-mails {r['email_sent']} sent / {r['email_failed']} failed")
+
+
+@notify_app.command("keys")
+def notify_keys():
+    """Make the key pair that signs pop-ups, if there isn't one yet (run at every deploy)."""
+    from notify.send import ensure_keys
+    with _db.connect(settings().db_url) as conn:
+        _private, public = ensure_keys(conn)
+    typer.echo(f"pop-up signing key ready (public half ends …{public[-6:]})")
+
+
+@notify_app.command("test")
+def notify_test_cmd(user_id: str = typer.Argument(..., help="bsb.app_users.user_id")):
+    """Send a test pop-up and e-mail to one person."""
+    import json
+
+    from notify.run import test
+    with _db.connect(settings().db_url) as conn:
+        typer.echo(json.dumps(test(conn, user_id)))
 
 
 if __name__ == "__main__":
