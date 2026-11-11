@@ -66,6 +66,11 @@ jobs:
           if [[ "$EVENT" == "workflow_run" ]]; then args+=(--if-stale); fi
           bsb model project "${args[@]}"
 
+      # Sleeper guillotine league: chop odds and waiver bids from the fresh projections
+      - name: Waiver bids
+        continue-on-error: true
+        run: bsb league bids
+
       - uses: actions/upload-artifact@v4
         with:
           name: projections

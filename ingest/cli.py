@@ -21,6 +21,7 @@ model_app = typer.Typer(no_args_is_help=True, help="Projection model (needs the 
 edges_app = typer.Typer(no_args_is_help=True, help="Market edges: props and game lines")
 lineups_app = typer.Typer(no_args_is_help=True, help="DraftKings lineup optimizer (needs the [model] extra)")
 app_app = typer.Typer(no_args_is_help=True, help="Work the web app asks for (bsb.app_jobs)")
+league_app = typer.Typer(no_args_is_help=True, help="Sleeper guillotine league: waiver bids (needs the [model] extra)")
 app.add_typer(db_app, name="db")
 app.add_typer(nfl_app, name="nfl")
 app.add_typer(sleeper_app, name="sleeper")
@@ -30,6 +31,7 @@ app.add_typer(model_app, name="model")
 app.add_typer(lineups_app, name="lineups")
 app.add_typer(edges_app, name="edges")
 app.add_typer(app_app, name="app")
+app.add_typer(league_app, name="league")
 
 log = logging.getLogger("bsb")
 
@@ -184,6 +186,20 @@ def league(league_id: str, username: str = typer.Option(None, help="your Sleeper
 
     with _db.connect(settings().db_url) as conn:
         snapshot_league(conn, league_id, username)
+
+
+@league_app.command("bids")
+def league_bids(
+    league_id: str = typer.Option(None, help="Sleeper league id (default: the league my roster is in)"),
+    write: bool = typer.Option(True, "--write/--no-write", help="store the result for the app"),
+    sims: int = typer.Option(20000, help="simulated seasons"),
+):
+    """Who is likely to be chopped, what each free agent is worth to me, and what to bid."""
+    from league import bids
+
+    with _db.connect(settings().db_url) as conn:
+        res = bids.run(conn, league_id, write=write, n_sim=sims)
+    typer.echo(bids.report(res) if res else "No live roster in a guillotine league — nothing to do.")
 
 
 # --- odds -------------------------------------------------------------------

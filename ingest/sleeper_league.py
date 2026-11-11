@@ -50,6 +50,52 @@ def matchups(league_id: str, week: int) -> list[dict]:
     return _get(f"/league/{league_id}/matchups/{week}")
 
 
+def transactions(league_id: str, week: int) -> list[dict]:
+    return _get(f"/league/{league_id}/transactions/{week}")
+
+
+def _ts(ms) -> datetime | None:
+    return datetime.fromtimestamp(ms / 1000, UTC) if ms else None
+
+
+def transaction_rows(league_id: str, txs: list[dict]) -> list[tuple]:
+    """Sleeper transactions → rows for bsb.fantasy_transactions. A waiver claim
+    adds exactly one player; `adds` maps player id → roster id."""
+    rows = []
+    for t in txs:
+        adds, drops = t.get("adds") or {}, t.get("drops") or {}
+        add = next(iter(adds), None)
+        roster = adds.get(add) if add else (next(iter(t.get("roster_ids") or []), None))
+        rows.append((
+            str(t["transaction_id"]), league_id, t.get("leg"), t.get("type") or "?", t.get("status"), roster, add,
+            next(iter(drops), None), (t.get("settings") or {}).get("waiver_bid"),
+            psycopg.types.json.Jsonb(adds), psycopg.types.json.Jsonb(drops),
+            _ts(t.get("created")), _ts(t.get("status_updated")), (t.get("metadata") or {}).get("notes"),
+        ))
+    return rows
+
+
+def snapshot_transactions(conn: psycopg.Connection, league_id: str, through_week: int) -> int:
+    """Every transaction of the season so far (waiver bids won and lost, chops).
+    Needs migration 0010; skipped quietly before it is applied."""
+    if not conn.execute("select to_regclass('bsb.fantasy_transactions')").fetchone()[0]:
+        return 0
+    n = 0
+    for week in range(1, max(through_week, 1) + 2):
+        rows = transaction_rows(league_id, transactions(league_id, week))
+        if rows:
+            conn.cursor().executemany(
+                """insert into bsb.fantasy_transactions (transaction_id, league_id, leg, type, status, roster_id,
+                       player_id, drop_player_id, bid, adds, drops, created, status_updated, note)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   on conflict (transaction_id) do update set status = excluded.status,
+                       status_updated = excluded.status_updated, note = excluded.note""",
+                rows,
+            )
+            n += len(rows)
+    return n
+
+
 def ensure_schema(conn: psycopg.Connection) -> None:
     conn.execute(
         """
@@ -129,6 +175,7 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
                 }
             )
         run.rows = insert_df(conn, "fantasy_roster_snapshots", pl.DataFrame(rows, infer_schema_length=None))
-        run.detail.update(league=lg.get("name"), week=week, rosters=len(rows))
+        txs = snapshot_transactions(conn, league_id, week)
+        run.detail.update(league=lg.get("name"), week=week, rosters=len(rows), transactions=txs)
         conn.commit()
         return run.rows

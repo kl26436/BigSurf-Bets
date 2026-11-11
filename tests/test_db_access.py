@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 9
+    assert len(db.migrate(url)) >= 10
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -308,3 +308,81 @@ def test_feed_health_flags_a_quiet_feed(db_url):
         c.commit()
         state = dict(c.execute("select job, state from public.app_feed_health").fetchall())
     assert state["sleeper.status"] == "stale" and state["odds.oddslink"] == "failing" and state["nflverse.player_stats"] == "never"
+
+
+def test_waiver_bids_run_end_to_end_and_only_members_read_them(db_url):
+    """Seed a three-team guillotine league on the test slate, ingest its bid
+    history the way the Sleeper feed delivers it, run the advice and read it
+    back through the app's views."""
+    from ingest.sleeper_league import transaction_rows
+    from league import bids
+
+    lid = "L1"
+    with psycopg.connect(db_url) as c:
+        players = c.execute(
+            "select player_id, position, latest_team from bsb.players where position in ('QB','RB','WR','TE') order by player_id"
+        ).fetchall()
+        sid = {pid: str(5000 + i) for i, (pid, _, _) in enumerate(players)}
+        for pid, pos, team in players:
+            c.execute(
+                """insert into bsb.player_status_snapshots (source, player_id, source_player_id, team, position, raw)
+                   values ('sleeper', %s, %s, %s, %s, %s::jsonb)""",
+                (pid, sid[pid], team, pos, json.dumps({"full_name": "x", "status": "Active"})),
+            )
+        c.execute(
+            """insert into bsb.fantasy_leagues (league_id, name, season, total_rosters, roster_positions, settings)
+               values (%s, 'Chop', 2026, 4, %s, %s::jsonb)""",
+            (lid, ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "BN"], json.dumps({"type": 3, "waiver_budget": 1000})),
+        )
+        by_team: dict[str, list[str]] = {}
+        for pid, _pos, team in players:
+            by_team.setdefault(team, []).append(sid[pid])
+        rosters = [(1, "me", True, by_team["AAA"], 300), (2, "rival", False, by_team["BBB"], 100),
+                   (3, "other", False, by_team["CCC"], 650), (4, "gone", False, [], 0)]
+        for rid, owner, me, ids, used in rosters:
+            raw = {"settings": {"waiver_budget_used": used, **({"eliminated": 9} if not ids else {})}}
+            c.execute(
+                """insert into bsb.fantasy_roster_snapshots (league_id, week, roster_id, owner_name, is_me, players, starters, raw)
+                   values (%s, 10, %s, %s, %s, %s, %s, %s::jsonb)""",
+                (lid, rid, owner, me, ids, ids[:7], json.dumps(raw)),
+            )
+        feed = [
+            {"transaction_id": 1, "type": "waiver", "status": "complete", "leg": 8, "adds": {"7001": 2}, "drops": {"7002": 2},
+             "settings": {"waiver_bid": 100}, "created": 1_790_000_000_000, "status_updated": 1_790_000_100_000,
+             "metadata": {"notes": "ok"}, "roster_ids": [2]},
+            {"transaction_id": 2, "type": "waiver", "status": "failed", "leg": 8, "adds": {"7001": 3}, "drops": None,
+             "settings": {"waiver_bid": 60}, "created": 1_790_000_000_000, "status_updated": 1_790_000_100_000, "roster_ids": [3]},
+            {"transaction_id": 3, "type": "chopped", "status": "complete", "leg": 9, "adds": None, "drops": {"7003": 4},
+             "settings": None, "created": 1_790_600_000_000, "status_updated": 1_790_600_000_000, "roster_ids": [4]},
+        ]
+        rows = transaction_rows(lid, feed)
+        assert rows[0][5:9] == (2, "7001", "7002", 100) and rows[2][5:7] == (4, None)
+        c.cursor().executemany(
+            """insert into bsb.fantasy_transactions (transaction_id, league_id, leg, type, status, roster_id, player_id,
+                   drop_player_id, bid, adds, drops, created, status_updated, note) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            rows,
+        )
+        c.commit()
+
+        lg = bids.load_league(c)
+        assert [t.owner for t in lg.teams] == ["me", "rival", "other"] and lg.me.budget == 700
+        assert lg.week == 10 and len(lg.weeks) == 2                      # three teams → two more chops
+        assert len(lg.bids) == 2 and {b.budget_before for b in lg.bids} == {1000}
+        taken = {p.pid for t in lg.teams for p in t.players}
+        assert lg.free_agents and not ({p.pid for p in lg.free_agents} & taken)
+        res = bids.run(c, n_sim=2000)
+        assert "teams left" in bids.report(res)
+        run_id, n = c.execute("select max(run_id), count(*) from bsb.waiver_recs").fetchone()
+        assert n == len(res.recs) > 0
+        assert c.execute("select bid from bsb.waiver_recs where run_id = %s and rank = 1", (run_id,)).fetchone()[0] <= 700
+
+    with As(db_url, "anon") as c:
+        for v in ("public.app_waiver_run", "public.app_waiver_recs", "bsb.fantasy_transactions"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(f"select 1 from {v} limit 1")
+    with As(db_url, "authenticated", BOB) as c:
+        assert c.execute("select * from public.app_waiver_recs").fetchall() == []
+    with As(db_url, "authenticated", ALICE) as c:
+        run = c.execute("select week, teams_left, budget, jsonb_array_length(teams) from public.app_waiver_run").fetchone()
+        assert run == (10, 3, 700, 3)
+        assert c.execute("select count(*) from public.app_waiver_recs").fetchone()[0] == n
