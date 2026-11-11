@@ -121,6 +121,8 @@ const ICONS: Record<string, ReactNode> = {
   plus: <path d="M12 5v14M5 12h14" />,
   x: <path d="M6 6l12 12M18 6L6 18" />,
   back: <path d="M15 5l-7 7 7 7" />,
+  check: <path d="M5 12.500l4.500 4.500L19 7.500" />,
+  alert: <path d="M12 6v8M12 18v.010" />,
 };
 export function Icon({ name }: { name: keyof typeof ICONS | string }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true">{ICONS[name]}</svg>;

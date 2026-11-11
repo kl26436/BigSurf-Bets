@@ -7,6 +7,7 @@ import type { Pos } from "./types";
 export type Mark = "lock" | "exclude";
 export type PlayerSort = "points" | "value" | "salary";
 export interface PlayersView { pos: Pos | "ALL"; sort: PlayerSort; text: string }
+export interface BetsView { view: "best" | "prices" | "mine"; kind: "games" | "players" }
 /** The hand-built lineup as it was last saved: the same nine again is not saved twice. */
 export interface SavedHand { key: string; setId: number; label: string | null }
 interface Toast { text: string; error?: boolean }
@@ -23,6 +24,8 @@ interface Store {
   setSlateId: (id: number | null) => void;
   playersView: PlayersView;
   setPlayersView: (patch: Partial<PlayersView>) => void;
+  betsView: BetsView;
+  setBetsView: (patch: Partial<BetsView>) => void;
   toast: Toast | null;
   say: (text: string, error?: boolean) => void;
 }
@@ -43,6 +46,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [savedHand, setSavedHand] = useState<SavedHand | null>(() => load("bsb-saved-hand", null));
   // kept for the session, not across launches: a filter left on from last week hides players
   const [playersView, setView] = useState<PlayersView>({ pos: "ALL", sort: "points", text: "" });
+  const [betsView, setBets] = useState<BetsView>({ view: "best", kind: "games" });
   const [slateId, setSlateId] = useState<number | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -57,6 +61,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return next;
   }), []);
   const setPlayersView = useCallback((patch: Partial<PlayersView>) => setView((v) => ({ ...v, ...patch })), []);
+  const setBetsView = useCallback((patch: Partial<BetsView>) => setBets((v) => ({ ...v, ...patch })), []);
   const say = useCallback((text: string, error = false) => {
     clearTimeout(timer.current);
     setToast({ text, error });
@@ -64,8 +69,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const value = useMemo<Store>(() => ({
     marks, setMark, clearMarks: () => setMarks({}), hand: hand.length === 9 ? hand : EMPTY, setHand: setHandState,
-    savedHand, setSavedHand, slateId, setSlateId, playersView, setPlayersView, toast, say,
-  }), [marks, setMark, hand, savedHand, slateId, playersView, setPlayersView, toast, say]);
+    savedHand, setSavedHand, slateId, setSlateId, playersView, setPlayersView, betsView, setBetsView, toast, say,
+  }), [marks, setMark, hand, savedHand, slateId, playersView, setPlayersView, betsView, setBetsView, toast, say]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

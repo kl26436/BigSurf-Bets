@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 12
+    assert len(db.migrate(url)) >= 13
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -105,7 +105,7 @@ class As:
 
 VIEWS = ["app_feed_health", "app_model_runs", "app_slates", "app_pool", "app_projections", "app_games", "app_lineup_sets",
          "app_lineups", "app_lineup_players", "app_line_quotes", "app_prop_edges", "app_scorecards", "app_player_log",
-         "app_my_roster", "app_free_agents", "app_jobs", "app_overrides"]
+         "app_my_roster", "app_free_agents", "app_jobs", "app_overrides", "app_dk_entries", "app_bets"]
 
 
 def test_every_table_has_row_level_security(db_url):
@@ -143,7 +143,8 @@ def test_signed_in_stranger_sees_no_rows_and_cannot_write(db_url):
                      "public.bsb_rename_set(1, 'x')", "public.bsb_archive_set(1)", "public.bsb_delete_set(1)",
                      "public.bsb_delete_lineup(1, 1)", "public.bsb_dismiss_job(1)", "public.bsb_set_lineups_entered(1, '{1}', true)",
                      "public.bsb_replace_lineup(1, 1, '{a}')", "public.bsb_import_dk_entries(1, '[]'::jsonb)",
-                     "public.bsb_assign_entries('[]'::jsonb)"]:
+                     "public.bsb_assign_entries('[]'::jsonb)", "public.bsb_log_bet('{}'::jsonb)", "public.bsb_settle_bet(1, 'won')",
+                     "public.bsb_delete_bet(1)", "public.bsb_grade_bets()"]:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(f"select {call}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -433,6 +434,65 @@ def test_draftkings_entries_are_linked_to_lineups(db_url):
     with psycopg.connect(db_url) as c:
         c.execute("delete from bsb.dk_entries")
         c.commit()
+
+
+def test_bets_are_recorded_graded_from_the_score_and_compared_with_the_close(db_url):
+    with psycopg.connect(db_url) as c:
+        gid, home, away, kickoff = c.execute("select game_id, home_team, away_team, kickoff_at from bsb.games where season = 2026 and week = 10 order by game_id limit 1").fetchone()
+        c.execute("delete from bsb.bets")
+        # the sharp book's fair chance for the home side at -3: 52% a day out, 55% at the last look before kickoff, 60% after it (ignored)
+        for at, fair in ((kickoff - timedelta(days=1), 0.52), (kickoff - timedelta(minutes=5), 0.55), (kickoff + timedelta(minutes=5), 0.60)):
+            c.execute("insert into bsb.line_quotes (captured_at, game_id, season, week, market, number, outcome, line, bookmaker, price_decimal, fair_prob) "
+                      "values (%s, %s, 2026, 10, 'spread', -3, 'home', -3, 'pinnacle', 1.9, %s)", (at, gid, fair))
+        c.commit()
+
+    def bet(c, **kw):
+        base = {"bookmaker": "DraftKings", "kind": "game", "description": "x", "game_id": gid, "price_decimal": 2.0, "stake": 10}
+        return c.execute("select public.bsb_log_bet(%s::jsonb)", (json.dumps({**base, **kw}),)).fetchone()[0]
+
+    with As(db_url, "authenticated", ALICE) as c:
+        home_3 = bet(c, description=f"{home} -3", market="spread", number=-3, outcome="home", fair_prob=0.52)
+        away_3 = bet(c, description=f"{away} +3", market="spread", number=-3, outcome="away")
+        over = bet(c, description="Over 45", market="total", number=45, outcome="over", price_decimal=1.91, stake=20)
+        win = bet(c, description=f"{away} to win", market="moneyline", number=0, outcome="away", price_decimal=2.5)
+        hand = bet(c, description="Something written by hand", kind="other", game_id=None)
+        for bad in ({"stake": 0}, {"price_decimal": 1}, {"description": " "}, {"bookmaker": ""}):
+            with pytest.raises(psycopg.errors.RaiseException):
+                bet(c, **bad)
+        row = lambda i: c.execute("select result, returned, profit, closing_fair, beat_close, graded_by, bookmaker from public.app_bets where id = %s", (i,)).fetchone()  # noqa: E731
+        assert row(home_3) == ("open", None, None, None, None, None, "draftkings")       # before kickoff there is no close
+        assert c.execute("select public.bsb_grade_bets()").fetchone()[0] == 0             # and nothing to grade
+
+    with psycopg.connect(db_url) as c:          # the game is played: home wins 24-21, a tie against -3 and exactly 45 points
+        c.execute("update bsb.games set kickoff_at = now() - interval '4 hours', home_score = 24, away_score = 21 where game_id = %s", (gid,))
+        c.execute("update bsb.line_quotes set captured_at = captured_at - (%s - (now() - interval '4 hours')) where game_id = %s and bookmaker = 'pinnacle' and market = 'spread'", (kickoff, gid))
+        c.commit()
+    try:
+        with As(db_url, "authenticated", ALICE) as c:
+            assert c.execute("select public.bsb_grade_bets()").fetchone()[0] == 4
+            assert row(home_3)[:3] == ("void", 10, 0) and row(away_3)[:3] == ("void", 10, 0)       # tied with the number: stake back
+            assert row(over)[:3] == ("void", 20, 0)
+            assert row(win)[:3] == ("lost", 0, -10) and row(win)[5] == "score"
+            assert row(hand)[0] == "open"                                                        # nothing to grade it from
+            # took 2.0 on a side the sharp book made 55% at the close: 10% better than the closing price
+            assert float(row(home_3)[3]) == 0.55 and float(row(home_3)[4]) == 0.1
+            assert row(away_3)[3] is None                                                        # nobody quoted that side at the end
+
+            c.execute("select public.bsb_settle_bet(%s, 'won')", (hand,))
+            assert row(hand)[:3] == ("won", 20, 10) and row(hand)[5] == "hand"
+            c.execute("select public.bsb_settle_bet(%s, 'open')", (hand,))
+            assert row(hand)[:3] == ("open", None, None)
+            with pytest.raises(psycopg.errors.RaiseException):
+                c.execute("select public.bsb_settle_bet(%s, 'maybe')", (hand,))
+            c.execute("select public.bsb_delete_bet(%s)", (hand,))
+            assert row(hand) is None
+            assert c.execute("select public.bsb_grade_bets()").fetchone()[0] == 0                 # settled bets are not graded twice
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("update bsb.games set kickoff_at = %s, home_score = null, away_score = null where game_id = %s", (kickoff, gid))
+            c.execute("delete from bsb.line_quotes where game_id = %s and bookmaker = 'pinnacle' and market = 'spread'", (gid,))
+            c.execute("delete from bsb.bets")
+            c.commit()
 
 
 def test_scorecard_reports_the_sets_on_the_lineups_screen_and_entered_ones(db_url):

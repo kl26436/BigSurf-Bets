@@ -2,7 +2,7 @@
 // number here is invented; the app labels the whole session "Sample data".
 import { SLOTS } from "./lineup";
 import {
-  DEFAULT_SETTINGS, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun,
 } from "./types";
@@ -269,13 +269,40 @@ const q = (g: Game, market: LineQuote["market"], outcome: LineQuote["outcome"], 
   return { captured_at: hoursAgo(3), game_id: g.game_id, home_team: g.home_team, away_team: g.away_team, kickoff_at: g.kickoff_at, market, number,
     outcome, line, bookmaker: book, price_american: american, price_decimal: d, fair_prob: fair, ev: fair * d - 1, is_best: best, arb_pct: arb };
 };
-export const quotes: LineQuote[] = [
+const written: LineQuote[] = [
   q(games[0], "moneyline", "away", 0, null, "betmgm", 135, 0.445, true, 0.012), q(games[0], "moneyline", "home", 0, null, "circa", -128, 0.555, true, 0.012),
   q(games[0], "moneyline", "away", 0, null, "draftkings", 124, 0.445, false, 0.012), q(games[0], "moneyline", "home", 0, null, "pinnacle", -134, 0.555, false, 0.012),
   q(games[5], "total", "over", 55.5, 55.5, "circa", -102, 0.512, true, -0.01), q(games[5], "total", "under", 55.5, 55.5, "betmgm", -110, 0.488, true, -0.01),
   q(games[2], "spread", "home", -8.5, -8.5, "caesars", 100, 0.509, true, -0.016), q(games[2], "spread", "away", -8.5, 8.5, "fanduel", -112, 0.491, true, -0.016),
-  q(games[3], "spread", "away", 1.5, -1.5, "draftkings", -105, 0.5, true, -0.03),
+  q(games[3], "spread", "away", 1.5, -1.5, "draftkings", -105, 0.5, true, -0.03), q(games[3], "spread", "home", 1.5, 1.5, "betmgm", -112, 0.5, true, -0.03),
 ];
+/** The rest of the board: every game, three markets, six books, priced a little under the fair chance. */
+function board(): LineQuote[] {
+  const out: LineQuote[] = [];
+  const done = new Set(written.map((x) => `${x.game_id}|${x.market}`));
+  const books = ["pinnacle", "betmgm", "draftkings", "fanduel", "caesars", "circa"];
+  const american = (d: number) => (d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)));
+  for (const g of games) {
+    const spread = g.spread_line ?? 0, total = g.total_line ?? 45;
+    const pHome = Math.min(0.85, Math.max(0.15, 0.5 + spread * 0.03));
+    const markets: [LineQuote["market"], number, [LineQuote["outcome"], number | null, number][]][] = [
+      ["spread", -spread, [["away", spread, 0.5], ["home", -spread, 0.5]]],
+      ["total", total, [["over", total, 0.5], ["under", total, 0.5]]],
+      ["moneyline", 0, [["away", null, 1 - pHome], ["home", null, pHome]]],
+    ];
+    for (const [market, number, sides] of markets) {
+      if (done.has(`${g.game_id}|${market}`)) continue;
+      for (const [outcome, line, fair] of sides) {
+        const rows = books.map((b) => q(g, market, outcome, number, line, b, american((1 / fair) * (b === "pinnacle" ? 0.975 : 0.93 + rnd() * 0.055)), fair, false, -0.03));
+        const top = Math.max(...rows.map((r) => r.price_decimal));
+        rows.forEach((r) => { r.is_best = r.price_decimal === top; });
+        out.push(...rows);
+      }
+    }
+  }
+  return out;
+}
+export const quotes: LineQuote[] = [...written, ...board()];
 const starters = pool.filter((p) => p.pos !== "DST" && (p.dk_mean ?? 0) > 11);
 export const props: PropEdge[] = starters.slice(0, 14).map((p, i) => {
   const stat = p.pos === "QB" ? "passing_yards" : p.pos === "RB" ? "rushing_yards" : i % 2 ? "receptions" : "receiving_yards";
@@ -361,3 +388,39 @@ export const saveSettings = (s: Settings) => {
   try { localStorage.setItem("bsb-demo-settings", JSON.stringify({ ...DEFAULT_SETTINGS, ...s })); } catch { /* private window */ }
   return Promise.resolve();
 };
+
+// ---- the bet record -------------------------------------------------------------
+const bet = (id: number, hours: number, bookmaker: string, description: string, price: number, stake: number, result: Bet["result"], g: Game | null,
+  extra: Partial<Bet> = {}): Bet => ({
+  id, created_at: hoursAgo(hours), placed_at: hoursAgo(hours), bookmaker, kind: "game", description, game_id: g?.game_id ?? null, market: null, number: null,
+  outcome: null, player_id: null, price_decimal: price, stake, fair_prob: null, result, settled_at: result === "open" ? null : hoursAgo(hours - 30),
+  graded_by: result === "open" ? null : "score", note: null, home_team: g?.home_team ?? null, away_team: g?.away_team ?? null, kickoff_at: g?.kickoff_at ?? null,
+  returned: result === "won" ? stake * price : result === "void" ? stake : result === "lost" ? 0 : null,
+  profit: result === "won" ? stake * (price - 1) : result === "void" ? 0 : result === "lost" ? -stake : null, closing_fair: null, beat_close: null, ...extra });
+let bets: Bet[] = [
+  bet(5, 5, "betmgm", `${games[0].away_team} to win`, 2.35, 8, "open", games[0], { market: "moneyline", number: 0, outcome: "away", fair_prob: 0.445 }),
+  bet(4, 26, "draftkings", `Over ${games[1].total_line ?? 47.5} · ${games[1].away_team} at ${games[1].home_team}`, 1.95, 10, "open", games[1], { market: "total", outcome: "over", fair_prob: 0.52 }),
+  bet(3, 150, "fanduel", "KC -2.5", 1.95, 10, "won", null, { closing_fair: 0.535, beat_close: 0.0433, fair_prob: 0.52 }),
+  bet(2, 152, "caesars", "Under 44.5 · NYJ at BUF", 1.91, 10, "lost", null, { closing_fair: 0.51, beat_close: -0.0259, fair_prob: 0.53 }),
+  bet(1, 175, "betmgm", "DET to win", 1.8, 12, "won", null, { closing_fair: 0.58, beat_close: 0.044, fair_prob: 0.57 }),
+];
+export const listBets = () => Promise.resolve(bets.map((b) => ({ ...b })));
+export function logBet(b: Record<string, unknown>): Promise<number> {
+  const id = Math.max(0, ...bets.map((x) => x.id)) + 1;
+  const g = games.find((x) => x.game_id === b.game_id) ?? null;
+  bets = [{ ...bet(id, 0, String(b.bookmaker).toLowerCase(), String(b.description), Number(b.price_decimal), Number(b.stake), "open", g),
+    kind: (b.kind as Bet["kind"]) ?? "other", market: (b.market as string) ?? null, number: (b.number as number) ?? null,
+    outcome: (b.outcome as Bet["outcome"]) ?? null, player_id: (b.player_id as string) ?? null, fair_prob: (b.fair_prob as number) ?? null, note: (b.note as string) ?? null }, ...bets];
+  return Promise.resolve(id);
+}
+export function settleBet(id: number, result: Bet["result"]): Promise<void> {
+  bets = bets.map((b) => (b.id !== id ? b : { ...b, result, settled_at: result === "open" ? null : new Date().toISOString(), graded_by: result === "open" ? null : "hand",
+    returned: result === "won" ? b.stake * b.price_decimal : result === "void" ? b.stake : result === "lost" ? 0 : null,
+    profit: result === "won" ? b.stake * (b.price_decimal - 1) : result === "void" ? 0 : result === "lost" ? -b.stake : null }));
+  return Promise.resolve();
+}
+export function deleteBet(id: number): Promise<void> {
+  bets = bets.filter((b) => b.id !== id);
+  return Promise.resolve();
+}
+export const gradeBets = () => Promise.resolve(0);

@@ -4,7 +4,7 @@ import { Empty, Icon, Loading, PlayerName, PosTag, Sheet } from "../components/u
 import { usePool, useSaveLineup } from "../lib/api";
 import { kickoff, pts, slateTitle, usd } from "../lib/format";
 import { SLOTS, SLOT_LABEL, addPlayer, arrangeForLateSwap, check, handKey, pickerChoices, removeAt, toDkCsv, value, type Lineup, type PickSort } from "../lib/lineup";
-import { useSheet, useTitle } from "../lib/nav";
+import { useSheet, useTitle, useWide } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
 import type { PoolPlayer } from "../lib/types";
@@ -29,6 +29,9 @@ export function Builder() {
   const [sort, setSort] = useState<PickSort>("points");
   const [fits, setFits] = useState(true);
   const [name, setName] = useState("");
+  // on a laptop the picker sits beside the lineup: the spot being filled is plain state, not a sheet
+  const wide = useWide();
+  const [focus, setFocus] = useState<number | null>(null);
   useTitle("Build a lineup");
 
   const byId = useMemo(() => new Map((pool.data ?? []).map((p) => [p.dk_id, p])), [pool.data]);
@@ -39,10 +42,13 @@ export function Builder() {
   if (isLoading || pool.isLoading) return <Loading />;
   if (!slate) return <Empty title="No DraftKings games loaded" why="A lineup needs this week's salaries." how={<Link className="accent" to="/more/settings">Add a salary file</Link>} />;
 
-  const slot = picking == null ? null : SLOTS[picking];
+  const active = wide ? (focus != null && lineup[focus] === null ? focus : null) : picking;
+  const slot = active == null ? null : SLOTS[active];
+  const openSlots = SLOTS.filter((_, i) => lineup[i] === null);
   const taken = new Set(hand.filter((id): id is string => !!id));
-  // everyone who can fill the slot, then the ones the budget allows: the whole list, never a top-N
-  const everyone = slot == null ? [] : pickerChoices(pool.data ?? [], slot, taken, { text, sort });
+  // everyone who can fill the slot (beside the lineup: any open spot), then the ones the budget allows: the whole list, never a top-N
+  const everyone = slot != null ? pickerChoices(pool.data ?? [], slot, taken, { text, sort })
+    : wide && openSlots.length > 0 ? pickerChoices(pool.data ?? [], openSlots, taken, { text, sort }) : [];
   const choices = fits ? everyone.filter((p) => p.salary <= c.left) : everyone;
   // the same nine as the last save: saving again would only make a duplicate
   const saved = c.complete && savedHand?.key === handKey(hand) ? savedHand : null;
@@ -53,16 +59,16 @@ export function Builder() {
     closePicker();
   }
   function choose(p: PoolPlayer) {
-    if (picking != null && lineup[picking] === null) {
+    if (active != null && lineup[active] === null) {
       const next = lineup.slice();
-      next[picking] = p;
+      next[active] = p;
       setLineup(next);
     } else {
       const res = addPlayer(lineup, p);
       if (res.error) return say(res.error, true);
       setLineup(res.lineup);
     }
-    closePick();
+    if (wide) { setText(""); setFocus(null); } else closePick();
   }
   function finish(kind: "save" | "file") {
     const ready = arrangeForLateSwap(lineup);
@@ -80,12 +86,8 @@ export function Builder() {
     });
   }
 
-  return (
-    <div className="stack stack--tight">
-      <div>
-        <p className="eyebrow">NFL · {slateTitle(slate.starts_at, 0)}</p>
-        <h1 className="title">Build a lineup</h1>
-      </div>
+  const left = (
+    <>
       <section className="card card--pad" aria-label="Lineup summary">
         <dl className="kv">
           <div><dt>Budget left</dt><dd className={`big num ${c.left < 0 ? "bad" : ""}`}>{usd(c.left)}</dd></div>
@@ -100,7 +102,7 @@ export function Builder() {
         {SLOTS.map((s, i) => {
           const p = lineup[i];
           return (
-            <div className="prow prow--pick" key={i}>
+            <div className={`prow prow--pick ${wide && active === i ? "prow--focus" : ""}`} key={i}>
               <span className="tag">{SLOT_LABEL[s]}</span>
               {p ? (
                 <>
@@ -112,9 +114,9 @@ export function Builder() {
                   <button className="iconbtn" onClick={() => setLineup(removeAt(lineup, i))} aria-label={`Remove ${p.name}`}><Icon name="x" /></button>
                 </>
               ) : (
-                <button className="grow prow__open" onClick={() => openPicker(i)}>
+                <button className="grow prow__open" aria-pressed={wide ? active === i : undefined} onClick={() => (wide ? setFocus(active === i ? null : i) : openPicker(i))}>
                   <p className="add">Add player</p>
-                  <p className="pmeta">{s === "FLEX" ? "Any position · tap to choose" : "Tap to choose"}</p>
+                  <p className="pmeta">{wide ? (active === i ? "Choosing for this spot" : s === "FLEX" ? "Any position · click to choose for this spot" : "Click to choose for this spot") : s === "FLEX" ? "Any position · tap to choose" : "Tap to choose"}</p>
                 </button>
               )}
             </div>
@@ -141,9 +143,9 @@ export function Builder() {
         <button className="btn grow" disabled={!c.complete} onClick={() => finish("file")}>Download for DraftKings</button>
         <button className="btn btn--danger" disabled={c.filled === 0} onClick={() => setLineup(SLOTS.map(() => null))}>Clear lineup</button>
       </div>
-
-      {slot != null && (
-        <Sheet title={slot === "FLEX" ? "Choose a player — any position" : `Choose a ${SLOT_LABEL[slot]}`} onClose={closePick}>
+    </>
+  );
+  const picker = (
           <div className="stack stack--tight">
             <p className={`small num ${c.left < 0 ? "bad" : "muted"}`}>{budget}</p>
             <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setText(e.target.value)} />
@@ -168,8 +170,26 @@ export function Builder() {
               {choices.length === 0 && <p className="muted small">{everyone.length > 0 ? "Nobody here fits the budget left. Untick the box to see everyone." : "Nobody matches."}</p>}
             </div>
           </div>
-        </Sheet>
-      )}
+  );
+  const pickTitle = slot == null ? "Choose a player" : slot === "FLEX" ? "Choose a player — any position" : `Choose a ${SLOT_LABEL[slot]}`;
+
+  return (
+    <div className="stack stack--tight">
+      <div>
+        <p className="eyebrow">NFL · {slateTitle(slate.starts_at, 0)}</p>
+        <h1 className="title">Build a lineup</h1>
+      </div>
+      {wide ? (
+        <div className="panes">
+          <div className="stack stack--tight">{left}</div>
+          <section className="card card--pad pane" aria-label="Choose a player">
+            <div className="card__head"><h2 className="h2">{openSlots.length === 0 ? "All nine spots are filled" : pickTitle}</h2>
+              {slot != null && <button className="btn btn--sm btn--quiet" onClick={() => setFocus(null)}>Every open spot</button>}</div>
+            {openSlots.length === 0 ? <p className="small muted">Remove a player on the left to change him.</p> : picker}
+          </section>
+        </div>
+      ) : left}
+      {!wide && slot != null && <Sheet title={pickTitle} onClose={closePick}>{picker}</Sheet>}
     </div>
   );
 }

@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 import { Entries } from "../components/Entries";
 import { GamesPicker } from "../components/GamesPicker";
 import { Empty, ErrorNote, Loading, Sheet, Stepper } from "../components/ui";
-import { useDismissJob, useJobs, usePool, useRequestJob, useSets, useSetsDetail } from "../lib/api";
+import { useDismissJob, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
 import { ago, pts, slateTitle } from "../lib/format";
 import { buildCards, describeSettings, visibleSets, type BuildCard } from "../lib/lineup";
 import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
-import { isOut } from "../lib/swap";
+import { useScratches } from "../lib/scratches";
 import type { LineupSet, Slate } from "../lib/types";
 
 export const MODE: Record<string, string> = { gpp: "Tournament set", cash: "Cash-game set", manual: "Built by hand" };
@@ -73,19 +73,12 @@ function RequestCard({ card }: { card: BuildCard }) {
 
 /** Entered lineups with a player who has since been ruled out: the one thing on this screen that can't wait. */
 function ScratchAlert({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
-  const entered = sets.filter((s) => s.entered && !s.archived_at);
-  const many = useSetsDetail(entered.map((s) => s.id));
-  const pool = usePool(slate.id);
-  if (!slate.upcoming || entered.length === 0 || !many.data || !pool.data?.length) return null;
-  const byId = new Map(pool.data.map((p) => [p.dk_id, p]));
-  const played = new Set(many.data.lineups.filter((l) => l.entered).map((l) => `${l.set_id}:${l.lineup_no}`));
-  const out = many.data.players.filter((p) => played.has(`${p.set_id}:${p.lineup_no}`) && isOut(byId.get(p.dk_id)));
-  if (out.length === 0) return null;
-  const hit = new Set(out.map((p) => `${p.set_id}:${p.lineup_no}`)).size;
+  const sc = useScratches(slate, sets);
+  if (!sc || sc.hit === 0) return null;
   return (
     <div className="card card--pad" role="alert">
-      <p className="strong bad">{hit === 1 ? "One entered lineup has" : `${hit} entered lineups have`} a player who is ruled out</p>
-      <p className="small">{[...new Set(out.map((p) => p.name))].join(", ")}</p>
+      <p className="strong bad">{sc.hit === 1 ? "One entered lineup has" : `${sc.hit} entered lineups have`} a player who is ruled out</p>
+      <p className="small">{sc.names.join(", ")}</p>
       <Link className="btn btn--sm btn--primary" to="/lineups/swap">Swap them out</Link>
     </div>
   );

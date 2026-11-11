@@ -4,7 +4,7 @@ import { Empty, ErrorNote, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, S
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
 import { POS_LABEL, addPlayer, value, type Lineup } from "../lib/lineup";
-import { useSheet, useTitle } from "../lib/nav";
+import { useSheet, useTitle, useWide } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore, type PlayerSort } from "../lib/store";
 import type { PoolPlayer, Pos } from "../lib/types";
@@ -27,6 +27,7 @@ export function Players() {
   // search, position and sort live in the store: leaving the screen and coming back keeps them
   const { marks, setMark, playersView: { pos, sort, text }, setPlayersView } = useStore();
   const [openId, openPlayer, closePlayer] = useSheet<string>("player");
+  const wide = useWide();
   useTitle("Players");
 
   const source = slate ? pool : all;
@@ -56,7 +57,7 @@ export function Players() {
           <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPlayersView({ pos: p })}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
         ))}
       </div>
-      {slate && (
+      {slate && !wide && (
         <label className="field"><span>Sort by</span>
           <select className="input" value={sort} onChange={(e) => setPlayersView({ sort: e.target.value as Sort })}>
             {Object.entries(SORTS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
@@ -66,6 +67,41 @@ export function Players() {
       <div className="spread"><span className="small muted">{rows.length} players</span><Fresh at={source.data?.find((p) => p.projected_at)?.projected_at} /></div>
       {rows.length === 0 ? (
         <Empty title="No players match" why="Players who are out, or haven't played this season, don't get expected points." how="Clear the search or pick another position." />
+      ) : wide ? (
+        <div className="card scroll-x">
+          <table className="table ptable">
+            <thead><tr>
+              <th scope="col">Player</th><th scope="col" className="left">Game</th>
+              {slate && <SortHead k="salary" label="Price" sort={sort} set={(k) => setPlayersView({ sort: k })} />}
+              {slate ? <SortHead k="points" label="Expected" sort={sort} set={(k) => setPlayersView({ sort: k })} /> : <th scope="col">Expected</th>}
+              {slate && <SortHead k="value" label="Per $1k" sort={sort} set={(k) => setPlayersView({ sort: k })} />}
+              <th scope="col">Low</th><th scope="col">High</th><th scope="col" className="left">Likely range</th>
+              {slate && <th scope="col"><span className="sr-only">In the next lineup build</span></th>}
+            </tr></thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={rowId(p)} onClick={() => openPlayer(rowId(p))}>
+                  <td><span className="inline inline--row"><PosTag pos={p.pos} />
+                    <button className="namebtn" onClick={(e) => { e.stopPropagation(); openPlayer(rowId(p)); }} aria-label={`${p.name} details`}>
+                      <PlayerName name={p.name} status={p.dk_status ?? p.injury_status} />
+                    </button></span></td>
+                  <td className="left muted">{p.team} vs {p.opponent} · {kickoff(p.kickoff_at)}{p.override_dk_mean != null ? " · your number" : ""}</td>
+                  {slate && <td className="num">{usd(p.salary)}</td>}
+                  <td className="num strong">{pts(p.dk_mean)}</td>
+                  {slate && <td className="num">{pts(value(p), 2)}</td>}
+                  <td className="num muted">{pts(p.dk_p10, 0)}</td><td className="num muted">{pts(p.dk_p90, 0)}</td>
+                  <td><span className="rangecell"><RangeBar p10={p.dk_p10} p25={p.dk_p25} p50={p.dk_p50} p75={p.dk_p75} p90={p.dk_p90} max={max} /></span></td>
+                  {slate && (
+                    <td><button className={`iconbtn ${marks[p.dk_id] === "lock" ? "on" : marks[p.dk_id] === "exclude" ? "off" : ""}`} onClick={(e) => { e.stopPropagation(); cycle(p); }}
+                      aria-label={marks[p.dk_id] === "lock" ? `${p.name} is in every lineup — click to leave him out` : marks[p.dk_id] === "exclude" ? `${p.name} is left out — click to clear` : `Put ${p.name} in every lineup`}>
+                      <Icon name={marks[p.dk_id] === "exclude" ? "ban" : "lock"} />
+                    </button></td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <div className="card">
           {rows.map((p) => (
@@ -89,6 +125,14 @@ export function Players() {
       )}
       {open && <PlayerSheet p={open} week={slate ? { season: slate.season, week: slate.week } : null} max={max} onClose={closePlayer} />}
     </div>
+  );
+}
+
+function SortHead({ k, label, sort, set }: { k: Sort; label: string; sort: Sort; set: (k: Sort) => void }) {
+  return (
+    <th scope="col" aria-sort={sort === k ? "descending" : "none"}>
+      <button className="thbtn" aria-pressed={sort === k} onClick={() => set(k)}>{label}{sort === k ? " ↓" : ""}</button>
+    </th>
   );
 }
 

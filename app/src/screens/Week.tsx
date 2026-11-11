@@ -1,12 +1,14 @@
 import { Link } from "react-router-dom";
-import { Empty, ErrorNote, Fresh, Loading } from "../components/ui";
-import { useGames, useHealth, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
+import { Empty, ErrorNote, Fresh, Icon, Loading } from "../components/ui";
+import { useBets, useEntries, useGames, useHealth, useJobs, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
 import { visibleSets } from "../lib/lineup";
 import { useTitle } from "../lib/nav";
+import { useScratches } from "../lib/scratches";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
-import type { FeedHealth, Job } from "../lib/types";
+import { DEFAULT_SETTINGS, type FeedHealth, type Job } from "../lib/types";
+import { goodPriceCount, nextStep, weekSteps, type Step } from "../lib/week";
 
 const STATE: Record<FeedHealth["state"], { label: string; tone: string }> = {
   ok: { label: "Fresh", tone: "pill--ok" }, stale: { label: "Out of date", tone: "pill--warn" },
@@ -36,6 +38,12 @@ export function Week() {
   const sets = useSets(slate?.id);
   const jobs = useJobs();
   const ask = useAsk();
+  const entries = useEntries(slate?.id);
+  const quotes = useQuotes();
+  const props = usePropEdges();
+  const settings = useSettings();
+  const bets = useBets();
+  const scratches = useScratches(slate, sets.data ?? []);
   useTitle("This week");
   if (health.isLoading || games.isLoading) return <Loading />;
   if (health.error) return <ErrorNote error={health.error} />;
@@ -48,19 +56,33 @@ export function Week() {
   const questionable = (pool.data ?? []).filter((p) => p.dk_mean != null && p.dk_status === "Q").length;
   const recent = (jobs.data ?? []).filter((j) => !j.dismissed_at).slice(0, 4);
   const shown = sets.data ? visibleSets(sets.data) : null;      // the same sets the Lineups screen lists
+  const steps = weekSteps({
+    games: !slate ? "none" : slate.upcoming ? "upcoming" : "started",
+    staleFeeds: old.map((f) => f.label.toLowerCase()),
+    sets: shown ? shown.auto.length + shown.mine.length : 0,
+    setsOnOldNumbers: shown ? shown.mine.filter((x) => !x.on_latest_projections).length : 0,
+    enteredLineups: scratches?.entered ?? 0,
+    entries: entries.data?.length ?? 0,
+    scratched: scratches?.hit ?? 0, scratchedNames: scratches?.names ?? [],
+    goodPrices: goodPriceCount(quotes.data ?? [], props.data ?? [], (settings.data ?? DEFAULT_SETTINGS).books),
+    openBets: (bets.data ?? []).filter((b) => b.result === "open").length,
+  });
+  const next = nextStep(steps);
 
   return (
     <div className="stack">
       <div>
         <p className="eyebrow">NFL{week ? ` · Week ${week.week}` : ""}</p>
         <h1 className="title">This week</h1>
-        {old.length > 0 && (
-          <div className="card card--pad" role="alert">
-            <p className="strong warn">{old.length === 1 ? "One feed needs attention" : `${old.length} feeds need attention`}</p>
-            <p className="small">Out of date: {old.map((f) => f.label.toLowerCase()).join(", ")}. Numbers that depend on {old.length === 1 ? "it" : "them"} may be wrong until the next refresh.</p>
-          </div>
-        )}
       </div>
+
+      <section className="card card--pad" aria-label="What to do now">
+        <div className="card__head"><h2 className="h2">{next ? "What to do now" : "You're set"}</h2>
+          <span className="small muted">{steps.filter((x) => x.state === "done").length} of {steps.length} done</span></div>
+        <ol className="steps">
+          {steps.map((x) => <StepRow key={x.key} step={x} next={next?.key === x.key} />)}
+        </ol>
+      </section>
 
       <div className="cols cols--2">
         <section className="card card--pad" aria-label="DraftKings games">
@@ -142,5 +164,19 @@ export function Week() {
         </section>
       )}
     </div>
+  );
+}
+
+const STEP_WORD: Record<Step["state"], string> = { done: "Done", todo: "To do", alert: "Needs attention", later: "Later" };
+function StepRow({ step, next }: { step: Step; next: boolean }) {
+  return (
+    <li className={`step step--${step.state}`} aria-current={next ? "step" : undefined}>
+      <span className="step__mark" title={STEP_WORD[step.state]}>
+        {step.state === "done" ? <Icon name="check" /> : step.state === "alert" ? <Icon name="alert" /> : null}
+        <span className="sr-only">{STEP_WORD[step.state]}: </span>
+      </span>
+      <div className="grow"><p className="strong">{step.title}</p><p className="small muted">{step.detail}</p></div>
+      {step.to && <Link className={`btn btn--sm ${next ? "btn--primary" : "btn--quiet"}`} to={step.to}>{step.action}</Link>}
+    </li>
   );
 }

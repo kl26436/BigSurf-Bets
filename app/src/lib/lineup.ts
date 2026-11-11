@@ -158,10 +158,11 @@ export type PickSort = "points" | "value" | "cheapest";
 
 /** Everyone who can fill a slot — the whole list, never a top-N: the cheap end of
  *  the pool is where a lineup gets finished. */
-export function pickerChoices(pool: PoolPlayer[], slot: Slot, taken: Set<string>,
+export function pickerChoices(pool: PoolPlayer[], slot: Slot | Slot[], taken: Set<string>,
   opts: { text?: string; sort?: PickSort; fitsOnly?: boolean; left?: number } = {}): PoolPlayer[] {
   const needle = (opts.text ?? "").trim().toLowerCase();
-  const rows = pool.filter((p) => p.dk_mean != null && canFill(slot, p.pos) && !taken.has(p.dk_id)
+  const slots = Array.isArray(slot) ? slot : [slot];          // several: anyone who fits one of the open spots
+  const rows = pool.filter((p) => p.dk_mean != null && slots.some((s) => canFill(s, p.pos)) && !taken.has(p.dk_id)
     && (!needle || p.name.toLowerCase().includes(needle) || p.team.toLowerCase() === needle)
     && (!opts.fitsOnly || opts.left == null || p.salary <= opts.left));
   const by: Record<PickSort, (a: PoolPlayer, b: PoolPlayer) => number> = {
