@@ -24,7 +24,7 @@ export function SignIn() {
 
   return (
     <main className="main signin">
-      <img className="signin__mark" src="/icons/mark.svg" alt="" />
+      <img className="signin__lockup" src="/icons/lockup-stacked.png" alt="Big Surf Bets" width="1200" height="1200" />
       <h1 className="title">Sign in</h1>
       <form className="stack stack--tight" onSubmit={(e) => run("in", e)}>
         <label className="field"><span>Email</span>

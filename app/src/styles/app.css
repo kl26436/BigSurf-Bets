@@ -21,7 +21,13 @@ h1, h2, h3, p { margin: 0; }
   min-height: var(--size-headerMinHeight); padding: var(--space-layout-safeTop) var(--space-layout-pagePad) 0;
   background: var(--semantic-bg-app); border-bottom: 1px solid var(--semantic-border-soft);
 }
-.header__mark { width: var(--component-header-logoMark); height: var(--component-header-logoMark); }
+.header__mark { width: var(--component-header-logoMark); height: var(--component-header-logoMark); flex: none; }
+/* the crest: accent on the app ground (brand kit, logo/mark, volt-on-navy) */
+.mark { display: block; }
+.mark__fg { fill: var(--semantic-accent-default); }
+.mark__cut { fill: var(--semantic-bg-app); }
+.mark__fg-line { fill: none; stroke: var(--semantic-accent-default); }
+.mark__cut-line { fill: none; stroke: var(--semantic-bg-app); }
 .wordmark {
   font-family: var(--font-display); font-weight: var(--typography-weight-display); font-size: var(--component-header-wordmarkSize);
   text-transform: uppercase; letter-spacing: var(--typography-tracking-display); color: var(--semantic-text-strong); line-height: var(--typography-lineHeight-tight);
@@ -191,7 +197,8 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
   color: var(--semantic-text-strong); box-shadow: var(--semantic-shadow-menu); font-weight: var(--typography-weight-semibold); animation: fade var(--component-toast-fadeMs); }
 .toast--error { background: var(--semantic-status-dangerBg); color: var(--semantic-status-danger); }
 .signin { max-width: 420px; margin: 0 auto; padding-top: var(--space-10); }
-.signin__mark { width: 72px; height: 72px; margin-bottom: var(--space-4); }
+/* the kit's stacked lockup carries its own clear space */
+.signin__lockup { display: block; width: min(100%, 300px); height: auto; margin: 0 auto; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 button.spread { width: 100%; min-height: var(--size-tapMin); }

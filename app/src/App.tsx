@@ -1,4 +1,5 @@
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { Mark } from "./components/Mark";
 import { Icon, Loading } from "./components/ui";
 import { DEMO, supabase, useClaim, useSession, useWhoAmI } from "./lib/api";
 import { useStore } from "./lib/store";
@@ -13,7 +14,7 @@ import { Week } from "./screens/Week";
 function Brand() {
   return (
     <>
-      <img className="header__mark" src="/icons/mark.svg" alt="" />
+      <Mark className="header__mark" />
       <span className="wordmark">Big Surf <em>Bets</em></span>
     </>
   );
@@ -71,7 +72,7 @@ function Door({ claimOpen }: { claimOpen: boolean }) {
   const claim = useClaim();
   return (
     <main className="main signin stack">
-      <img className="signin__mark" src="/icons/mark.svg" alt="" />
+      <img className="signin__lockup" src="/icons/lockup-stacked.png" alt="Big Surf Bets" width="1200" height="1200" />
       {claimOpen ? (
         <>
           <h1 className="title">Make this yours</h1>

@@ -24,6 +24,15 @@ for (const f of walk("src").filter((f) => f.endsWith(".tsx"))) {
     if (hit) problems.push(`${f}: "${s.trim().slice(0, 60)}" uses "${hit[0]}"`);
   }
 }
+// An SVG served as a file is used through <img> or CSS, where the browser will not load
+// anything the SVG links to. The kit's mark links to its figure that way, and the first
+// build showed the crest with the figure missing. Draw such marks inline (components/Mark.tsx).
+for (const f of walk("public").filter((f) => f.endsWith(".svg"))) {
+  if (/(?:xlink:)?href="(?!#|data:)/.test(readFileSync(f, "utf8"))) problems.push(`${f}: links to another file, which will not load when the SVG is used as an image`);
+}
+for (const f of walk("src").filter((f) => f.endsWith(".tsx"))) {
+  if (/<img[^>]+src="[^"]+\.svg"/.test(readFileSync(f, "utf8"))) problems.push(`${f}: SVG loaded with <img> — draw it inline so everything in it renders`);
+}
 if (problems.length) {
   console.error(problems.join("\n"));
   process.exit(1);

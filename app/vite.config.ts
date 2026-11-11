@@ -9,7 +9,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icons/*.png", "icons/mark.svg"],
+      includeAssets: ["icons/*.png"],
       manifest: {
         name: "Big Surf Bets",
         short_name: "Bets",
