@@ -118,7 +118,7 @@ def ingest_players(conn: psycopg.Connection, sport: str = "nfl") -> int:
             pl.col("espn_id").cast(pl.Utf8, strict=False),
             pl.col("pfr_id"),
         )
-        run.rows = upsert_df(conn, "players", df, pk=["sport", "player_id"], raw_from=raw)
+        run.rows = upsert_df(conn, "players", df, pk=["sport", "player_id"])
         conn.commit()
         return run.rows
 
@@ -210,7 +210,6 @@ def ingest_player_week_stats(
             "player_week_stats",
             df,
             pk=["sport", "season", "week", "season_type", "player_id"],
-            raw_from=raw,
         )
         run.detail["seasons"] = seasons
         conn.commit()
@@ -237,7 +236,7 @@ def ingest_injury_reports(
             pl.col("practice_primary_injury").alias("practice_injury"),
         )
         run.rows = upsert_df(
-            conn, "injury_reports", df, pk=["sport", "season", "week", "player_id"], raw_from=raw
+            conn, "injury_reports", df, pk=["sport", "season", "week", "player_id"]
         )
         run.detail["seasons"] = seasons
         conn.commit()
