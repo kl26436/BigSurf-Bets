@@ -31,6 +31,13 @@ export function PosTag({ pos }: { pos: Pos | string | null }) {
   return <span className="tag">{pos ? POS_LABEL[pos as Pos] ?? pos : "–"}</span>;
 }
 
+/** A line of short facts. It wraps between facts, never inside one, and a row never starts or ends with the dot. */
+export function Facts({ items, className = "small muted", as: Tag = "p" }: { items: (string | number | false | null | undefined)[]; className?: string; as?: "p" | "span" }) {
+  const shown = items.filter((x): x is string | number => x !== false && x != null && x !== "");
+  if (shown.length === 0) return null;
+  return <Tag className={`facts ${className}`}>{shown.map((x, i) => <span key={i}>{x}</span>)}</Tag>;
+}
+
 const SHORT_STATUS: Record<string, string> = { Questionable: "Q", Doubtful: "D", Out: "OUT", "Injured reserve": "IR" };
 
 /** `short` is the one- to three-letter tag used on player rows, where the full word does not fit. */

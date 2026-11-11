@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { GamesPicker } from "../components/GamesPicker";
-import { Empty, ErrorNote, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
+import { Empty, ErrorNote, Facts, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
 import { POS_LABEL, addPlayer, value, type Lineup } from "../lib/lineup";
@@ -170,7 +170,7 @@ function PlayerSheet({ p, week, max, onClose }: { p: PoolPlayer; week: { season:
   return (
     <Sheet title={p.name} onClose={onClose}>
       <div className="stack stack--tight">
-        <p className="small muted">{POS_LABEL[p.pos]} · {p.team} vs {p.opponent} · {kickoff(p.kickoff_at)} <StatusPill status={p.dk_status ?? p.injury_status} /></p>
+        <div className="inline"><Facts items={[POS_LABEL[p.pos], `${p.team} vs ${p.opponent}`, kickoff(p.kickoff_at)]} /><StatusPill status={p.dk_status ?? p.injury_status} /></div>
         <dl className="kv kv--3">
           <div><dt>Expected points</dt><dd className="big big--accent num">{pts(p.dk_mean)}</dd></div>
           <div><dt>Likely range</dt><dd className="big num">{pts(p.dk_p10, 0)}–{pts(p.dk_p90, 0)}</dd></div>

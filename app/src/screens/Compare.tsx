@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Empty, ErrorNote, Loading, PosTag } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, PosTag } from "../components/ui";
 import { useSet } from "../lib/api";
 import { pct, pts } from "../lib/format";
 import { describeSettings, exposure } from "../lib/lineup";
@@ -50,8 +50,12 @@ export function Compare() {
             {line("Most any one player is used", (s) => (num(s, "max_exposure_pct") != null ? `${num(s, "max_exposure_pct")}%` : "–"))}
           </tbody>
         </table>
-        <p className="small muted">{setName(sa)}: {describeSettings(sa).join(" · ") || "no build settings on record"}.</p>
-        <p className="small muted">{setName(sb)}: {describeSettings(sb).join(" · ") || "no build settings on record"}.</p>
+        {[sa, sb].map((x) => (
+          <div key={x.id}>
+            <p className="small strong">How {setName(x)} was built</p>
+            {describeSettings(x).length > 0 ? <Facts items={describeSettings(x)} /> : <p className="small muted">No build settings on record.</p>}
+          </div>
+        ))}
       </section>
       <section className="card card--pad scroll-x" aria-label="Where they differ">
         <div className="card__head"><h2 className="h2">Where they differ</h2><span className="small muted">{both} players are in both</span></div>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Empty, ErrorNote, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
 import {
   useArchiveSet, useDeleteLineup, useDeleteSet, usePool, useRenameSet, useRequestJob, useSet, useSetEntered, useSetLineupsEntered, useSets,
 } from "../lib/api";
@@ -128,7 +128,7 @@ export function SetDetail() {
       <div>
         <p className="eyebrow">{SOURCE[set.source] ?? set.source} · built {ago(set.created_at)}</p>
         <h1 className="title">{setName(set)}</h1>
-        {built.length > 0 && <p className="small muted">{built.join(" · ")}</p>}
+        <Facts items={built} />
         {set.archived_at && (
           <div className="inline" role="status">
             <p className="small">Archived: hidden from Lineups, kept for results.</p>
@@ -187,7 +187,7 @@ export function SetDetail() {
             const isOpen = wide || open === l.lineup_no;
             return (
               <article key={l.lineup_no} className={`card lcard ${chosen.has(l.lineup_no) ? "lcard--on" : ""}`} aria-label={`Lineup ${l.lineup_no}`}>
-                <div className="spread">
+                <div className="spread spread--wrap">
                   <label className="check">
                     <input type="checkbox" checked={chosen.has(l.lineup_no)} onChange={() => toggle(l.lineup_no)} aria-label={`Choose lineup ${l.lineup_no}`} />
                     <span className="strong">Lineup {l.lineup_no}</span>
@@ -201,7 +201,8 @@ export function SetDetail() {
                 <button className="lcard__nums" onClick={() => setOpened(open === l.lineup_no ? null : l.lineup_no)} aria-expanded={isOpen} disabled={wide}>
                   <span className="num"><span className="accent strong">{pts(l.proj)}</span> expected · {usd(l.salary)}{graded ? ` · scored ${pts(l.actual_points)}` : ""}</span>
                   {l.p10 != null && (
-                    <span className="num small muted">Range {pts(l.p10, 0)}–{pts(l.p90, 0)}{l.p99 != null ? ` · ceiling ${pts(l.p99, 0)}` : ""}{l.best_of_set_pct != null ? ` · best of the set ${pts(l.best_of_set_pct, 1)}% of the time` : ""}</span>
+                    <Facts as="span" className="num small muted" items={[`Range ${pts(l.p10, 0)}–${pts(l.p90, 0)}`, l.p99 != null ? `ceiling ${pts(l.p99, 0)}` : null,
+                      l.best_of_set_pct != null ? `best of the set ${pts(l.best_of_set_pct, 1)}% of the time` : null]} />
                   )}
                   <span className="small muted">{stackOf(mine)}</span>
                 </button>
@@ -270,8 +271,8 @@ export function SetDetail() {
           <div className="stack stack--tight">
             {(others.data ?? []).filter((o) => o.id !== id && !o.archived_at).map((o) => (
               <button key={o.id} className="rowline" onClick={() => navigate(`/lineups/compare/${id}/${o.id}`, { replace: true })}>
-                <span className="grow"><span className="strong">{setName(o)}</span><span className="small muted"> · {o.n_lineups} {o.n_lineups === 1 ? "lineup" : "lineups"} · {ago(o.created_at)}</span>
-                  {describeSettings(o).length > 0 && <span className="small muted pmeta">{describeSettings(o).join(" · ")}</span>}</span>
+                <span className="grow"><span className="strong">{setName(o)}</span><Facts as="span" items={[`${o.n_lineups} ${o.n_lineups === 1 ? "lineup" : "lineups"}`, ago(o.created_at)]} />
+                  <Facts as="span" className="small muted pmeta" items={describeSettings(o)} /></span>
                 <span className="muted" aria-hidden="true">›</span>
               </button>
             ))}

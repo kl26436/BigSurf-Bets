@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { BetSheet, usd2, vsFair } from "../components/BetSheet";
-import { Empty, ErrorNote, Loading, Sheet } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, Sheet } from "../components/ui";
 import { useBets, useDeleteBet, useGradeBets, usePropEdges, useQuotes, useSettings, useSettleBet } from "../lib/api";
 import { useSheet, useTitle } from "../lib/nav";
 import { ago, bookName, kickoff, odds, pct, pts, signed, statName, usd } from "../lib/format";
@@ -21,7 +21,7 @@ const MARKET: Record<LineQuote["market"], string> = { spread: "Spread", total: "
 /** Two-sided gaps close within minutes. Past this age a pair is history, not an offer. */
 const ARB_FRESH_MINUTES = 15;
 /** Below a dollar there is nothing to stake: say so instead of printing "$0". */
-const stakeNote = (stake: number) => (stake >= 1 ? `stake ${usd(stake)}` : "too small to stake at your balance");
+const stakeNote = (stake: number) => (stake >= 1 ? `stake ${usd(stake)}` : "stake under $1 at your balance");
 
 function Stale({ at }: { at: string | null | undefined }) {
   if (!at) return null;
@@ -138,9 +138,10 @@ function BestGames({ quotes, s, record }: { quotes: LineQuote[]; s: Settings; re
         {value.length === 0 ? <Empty title="Nothing beats the sharp price by 1%" why="That's the normal state of the market." how="Prices refresh Thursday, Saturday, Sunday and Monday. Prices shows every game regardless." /> : (
           <div className="card">{value.map((q) => (
             <button className="rowline rowline--tap" key={`${q.game_id}${q.market}${q.number}${q.outcome}${q.bookmaker}`} onClick={() => record(fromQuote(q, stake(q.fair_prob, q.price_decimal)))}>
-              <div className="grow"><p className="strong">{describe(q)}</p><p className="small muted">{q.away_team} at {q.home_team} · {kickoff(q.kickoff_at)} · {bookName(q.bookmaker)}</p></div>
-              <div className="right num"><p className="strong">{odds(q.price_american)} <span className="good">{signed((q.ev ?? 0) * 100)}%</span></p>
-                <p className="small muted">true chance {pct(q.fair_prob, 1)} · {stakeNote(stake(q.fair_prob, q.price_decimal))}</p></div>
+              <div className="grow"><p className="strong">{describe(q)}</p>
+                <Facts as="span" items={[`${q.away_team} at ${q.home_team}`, kickoff(q.kickoff_at), bookName(q.bookmaker)]} />
+                <Facts as="span" className="small muted num" items={[`true chance ${pct(q.fair_prob, 1)}`, stakeNote(stake(q.fair_prob, q.price_decimal))]} /></div>
+              <div className="right num"><p className="strong">{odds(q.price_american)}</p><p className="small good">{signed((q.ev ?? 0) * 100)}%</p></div>
             </button>))}
           </div>
         )}
@@ -183,9 +184,9 @@ function PropList({ title, note, rows, chance, stake, staked = false, empty, rec
             <button className="rowline rowline--tap" key={`${x.e.player_id}${x.e.stat}${x.e.line}${x.e.bookmaker}${x.side}`}
               onClick={() => record(fromLine(x.e, x.side === "Over" ? "over" : "under", x.e.bookmaker, x.price, x.fair, st))}>
               <div className="grow"><p className="strong">{x.e.player_name} {x.side.toLowerCase()} {pts(x.e.line)} {statName(x.e.stat).toLowerCase()}</p>
-                <p className="small muted">{x.e.team} · {bookName(x.e.bookmaker)} · model expects {pts(x.e.proj_mean)}</p></div>
-              <div className="right num"><p className="strong">{odds(decimalToAmerican(x.price))} <span className="good">{signed(x.ev * 100)}%</span></p>
-                <p className="small muted">chance {pct(chance(x), 1)}{staked ? ` · ${stakeNote(st)}` : ""}</p></div>
+                <Facts as="span" items={[x.e.team, bookName(x.e.bookmaker), `model expects ${pts(x.e.proj_mean)}`]} />
+                <Facts as="span" className="small muted num" items={[`chance ${pct(chance(x), 1)}`, staked ? stakeNote(st) : null]} /></div>
+              <div className="right num"><p className="strong">{odds(decimalToAmerican(x.price))}</p><p className="small good">{signed(x.ev * 100)}%</p></div>
             </button>);
         })}</div>
       )}
@@ -213,7 +214,7 @@ function GameBoard({ quotes, s, record }: { quotes: LineQuote[]; s: Settings; re
       {found && (
         <Sheet title={describe(found.side.all[0])} onClose={closeSide}>
           <div className="stack stack--tight">
-            <p className="small muted">{found.g.away_team} at {found.g.home_team} · {kickoff(found.g.kickoff_at)}{found.side.fair != null ? ` · true chance ${pct(found.side.fair, 1)}` : ""}</p>
+            <Facts items={[`${found.g.away_team} at ${found.g.home_team}`, kickoff(found.g.kickoff_at), found.side.fair != null ? `true chance ${pct(found.side.fair, 1)}` : null]} />
             <div>
               {found.side.all.map((q) => {
                 const yours = s.books.includes(q.bookmaker) && q.bookmaker !== "pinnacle";
@@ -309,7 +310,7 @@ function LineRow({ l, record }: { l: BoardLine; record: Record_ }) {
   return (
     <div className="board board--line">
       <div><p className="strong">{l.player_name} · {statName(l.stat).toLowerCase()} {pts(l.line)}</p>
-        <p className="small muted">{l.team}{l.proj_mean != null ? ` · model expects ${pts(l.proj_mean)}` : ""}{l.fair_over != null ? ` · true chance of the over ${pct(l.fair_over, 0)}` : ""}</p></div>
+        <Facts items={[l.team, l.proj_mean != null ? `model expects ${pts(l.proj_mean)}` : null, l.fair_over != null ? `true chance of the over ${pct(l.fair_over, 0)}` : null]} /></div>
       <div className="board__sides">{side("over")}{side("under")}</div>
     </div>
   );
@@ -348,12 +349,11 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
           <div><dt>Staked</dt><dd className="big num">{r.staked ? usd(r.staked) : "–"}</dd></div>
           <div><dt>Beat the close</dt><dd className="big num">{r.closeN ? `${r.closeBeat} of ${r.closeN}` : "–"}</dd></div>
         </dl>
-        <p className="small muted">
-          {r.settled === 0 ? "No settled bets yet. " : `${r.won} won, ${r.lost} lost${r.returned ? `, ${r.returned} stake back` : ""}${r.roi != null ? ` · ${signed(r.roi * 100)}% on money staked` : ""}. `}
-          {r.closeAvg != null ? `On average your prices were ${Math.abs(r.closeAvg * 100).toFixed(1)}% ${r.closeAvg >= 0 ? "better" : "worse"} than the closing price. ` : ""}
-          Beating the closing price is the early sign of an edge: a few dozen results say little, the closing price says a lot.
-          The close used here is the sharp book's price at the last check before kickoff, for game bets.
+        <p className="small">
+          {r.settled === 0 ? "No settled bets yet." : `${r.won} won, ${r.lost} lost${r.returned ? `, ${r.returned} stake back` : ""}.${r.roi != null ? ` ${signed(r.roi * 100)}% on the money staked.` : ""}`}
+          {r.closeAvg != null ? ` On average your prices were ${Math.abs(r.closeAvg * 100).toFixed(1)}% ${r.closeAvg >= 0 ? "better" : "worse"} than the closing price.` : ""}
         </p>
+        <p className="small muted">Beating the closing price is the early sign of an edge; a few dozen results say little. The close is the sharp book's price at the last check before kickoff, for game bets only.</p>
         <div className="inline">
           <button className="btn btn--primary" onClick={() => record(blank)}>Record a bet</button>
           <button className="btn" disabled={grade.isPending || open.length === 0} onClick={check}>{grade.isPending ? "Checking…" : "Check results"}</button>
@@ -376,7 +376,7 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
       {picked && (
         <Sheet title={picked.description} onClose={closeBet}>
           <div className="stack stack--tight">
-            <p className="small muted num">{bookName(picked.bookmaker)} · {odds(decimalToAmerican(picked.price_decimal))} · stake {usd2(picked.stake)} · placed {ago(picked.placed_at)}</p>
+            <Facts className="small muted num" items={[bookName(picked.bookmaker), odds(decimalToAmerican(picked.price_decimal)), `stake ${usd2(picked.stake)}`, `placed ${ago(picked.placed_at)}`]} />
             {picked.away_team && <p className="small muted">{picked.away_team} at {picked.home_team} · {kickoff(picked.kickoff_at)}</p>}
             {picked.fair_prob != null && <p className="small muted num">True chance when placed {pct(picked.fair_prob, 1)}{picked.closing_fair != null ? ` · at the last price check before kickoff ${pct(picked.closing_fair, 1)}` : ""}.</p>}
             {picked.result !== "open" && <p className="small">{RESULT[picked.result]}{picked.graded_by === "score" ? ", settled from the final score" : ", marked by hand"}.</p>}
@@ -403,12 +403,15 @@ function BetRow({ b, onClick }: { b: Bet; onClick: () => void }) {
   return (
     <button className="rowline rowline--tap" onClick={onClick}>
       <div className="grow"><p className="strong">{b.description}</p>
-        <p className="small muted">{bookName(b.bookmaker)} · {price} · stake {usd2(b.stake)}{b.result === "open" && b.kickoff_at ? ` · ${kickoff(b.kickoff_at)}` : ""}</p></div>
+        <Facts as="span" className="small muted num" items={[bookName(b.bookmaker), price, `stake ${usd2(b.stake)}`]} />
+        {b.result === "open"
+          ? <Facts as="span" items={[b.kickoff_at ? kickoff(b.kickoff_at) : null, `placed ${ago(b.placed_at)}`]} />
+          : <span className="small muted">{b.beat_close == null ? "No closing price to compare" : b.beat_close > 0 ? `Beat the close by ${pct(b.beat_close, 1)}` : `The close was ${pct(-b.beat_close, 1)} better`}</span>}
+      </div>
       <div className="right num">
         {b.result === "open"
-          ? <><p className="strong">to win {usd2(b.stake * (b.price_decimal - 1))}</p><p className="small muted">placed {ago(b.placed_at)}</p></>
-          : <><p className={`strong ${b.result === "won" ? "good" : b.result === "lost" ? "bad" : ""}`}>{b.result === "void" ? "Stake back" : `${(b.profit ?? 0) > 0 ? "+" : ""}${usd2(b.profit)}`}</p>
-            <p className="small muted">{b.beat_close == null ? "no closing price" : b.beat_close > 0 ? `beat the close by ${pct(b.beat_close, 1)}` : `close was ${pct(-b.beat_close, 1)} better`}</p></>}
+          ? <><p className="small muted">to win</p><p className="strong">{usd2(b.stake * (b.price_decimal - 1))}</p></>
+          : <p className={`strong ${b.result === "won" ? "good" : b.result === "lost" ? "bad" : ""}`}>{b.result === "void" ? "Stake back" : `${(b.profit ?? 0) > 0 ? "+" : ""}${usd2(b.profit)}`}</p>}
       </div>
     </button>
   );

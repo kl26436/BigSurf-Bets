@@ -90,14 +90,19 @@ h1, h2, h3, p { margin: 0; }
 .card--pad > * + * { margin-top: var(--space-3); }
 .card--pad > .rowline + .rowline, .card--pad > .card__head + * { margin-top: 0; }
 a.card { display: block; }
-.card__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-2); }
+/* a heading keeps its line: the note beside it drops underneath when the two don't fit */
+.card__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: var(--space-3); row-gap: var(--space-1); margin-bottom: var(--space-2); }
+.card__head > :first-child { flex: 0 0 auto; max-width: 100%; }
 .kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
 .kv--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .kv dt { font-size: var(--typography-size-base); color: var(--semantic-text-main); }
 .kv dd { margin: var(--space-1) 0 0; }
+/* the numbers of a strip share a line even when one label runs to two */
+.kv > div { display: flex; flex-direction: column; justify-content: flex-end; }
 .rowline { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-tapMin); padding: var(--space-2) 0; border-bottom: 1px solid var(--semantic-border-soft); }
 .rowline:last-child { border-bottom: 0; }
-.rowline > .grow { flex: 1; min-width: 0; }
+.rowline > .grow { flex: 1 1 50%; min-width: 0; }
+.rowline > .right { flex: 0 1 auto; max-width: 50%; }      /* the right side never squeezes the left to a word a line */
 .grow { flex: 1; min-width: 0; }
 .right { text-align: right; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -290,3 +295,18 @@ button.spread { width: 100%; min-height: var(--size-tapMin); }
 .panes { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: var(--space-layout-sectionGap); align-items: start; }
 .pane { position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-8)); overflow-y: auto; }
 .prow--focus { background: var(--semantic-bg-cardHi); }
+
+/* facts: separated by a dot, broken only between facts; the strip clipped on the left hides a dot that would start a line */
+.facts { display: flex; flex-wrap: wrap; margin-left: calc(-1 * var(--space-3)); clip-path: inset(0 0 0 var(--space-3)); }
+.facts > span { position: relative; padding-left: var(--space-3); }
+.facts > span::before { content: "·"; position: absolute; left: 0; width: var(--space-3); text-align: center; }
+.prow--top { align-items: start; }
+.prow--top > .tag { margin-top: var(--space-0-5); }
+.spread--wrap { flex-wrap: wrap; row-gap: var(--space-1); }
+.spread--wrap > :first-child { flex: none; }
+/* a small strip of label-over-value facts inside a row */
+.mini { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin: var(--space-2) 0; }
+.mini > div { display: flex; flex-direction: column; justify-content: flex-end; }
+.mini dt { font-size: var(--typography-size-xs); color: var(--semantic-text-muted); }
+.mini dd { margin: 0; font-size: var(--typography-size-base); font-weight: var(--typography-weight-semibold); color: var(--semantic-text-strong); }
+.prow__wide { grid-column: 1 / -1; }
