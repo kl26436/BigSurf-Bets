@@ -1,23 +1,23 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { Empty, ErrorNote, Loading, PlayerName, PosTag, Sheet, Stepper } from "../components/ui";
-import {
-  useArchiveSet, useDeleteLineup, useDeleteSet, useDismissJob, useJobs, usePool, useRenameSet, useRequestJob, useSet, useSetEntered, useSets,
-} from "../lib/api";
-import { ago, pct, pts, slateTitle, usd } from "../lib/format";
-import { SLOT_LABEL, buildCards, describeSettings, exposure, rebuildPayload, toDkCsv, visibleSets, type BuildCard, type Slot } from "../lib/lineup";
-import { useGoUp, useSheet, useTitle } from "../lib/nav";
+import { Link } from "react-router-dom";
+import { Entries } from "../components/Entries";
+import { GamesPicker } from "../components/GamesPicker";
+import { Empty, ErrorNote, Loading, Sheet, Stepper } from "../components/ui";
+import { useDismissJob, useJobs, usePool, useRequestJob, useSets, useSetsDetail } from "../lib/api";
+import { ago, pts, slateTitle } from "../lib/format";
+import { buildCards, describeSettings, visibleSets, type BuildCard } from "../lib/lineup";
+import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
-import type { LineupSet } from "../lib/types";
-import { download } from "./Builder";
+import { isOut } from "../lib/swap";
+import type { LineupSet, Slate } from "../lib/types";
 
 export const MODE: Record<string, string> = { gpp: "Tournament set", cash: "Cash-game set", manual: "Built by hand" };
-const SOURCE: Record<string, string> = { auto: "Automatic", user: "Your build", manual: "By hand" };
+export const SOURCE: Record<string, string> = { auto: "Automatic", user: "Your build", manual: "By hand" };
 /** What a set is called: the name it was given, else its kind. */
 export const setName = (s: Pick<LineupSet, "label" | "mode"> | null | undefined) => s?.label || MODE[s?.mode ?? ""] || "Lineup set";
 /** How long a build takes, measured on real requests (GitHub start plus the build itself). */
-const BUILD_TIME = "about a minute";
+export const BUILD_TIME = "about a minute";
 
 function SetCard({ s }: { s: LineupSet }) {
   const sm = (s.summary ?? {}) as Record<string, number>;
@@ -71,6 +71,26 @@ function RequestCard({ card }: { card: BuildCard }) {
   );
 }
 
+/** Entered lineups with a player who has since been ruled out: the one thing on this screen that can't wait. */
+function ScratchAlert({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
+  const entered = sets.filter((s) => s.entered && !s.archived_at);
+  const many = useSetsDetail(entered.map((s) => s.id));
+  const pool = usePool(slate.id);
+  if (!slate.upcoming || entered.length === 0 || !many.data || !pool.data?.length) return null;
+  const byId = new Map(pool.data.map((p) => [p.dk_id, p]));
+  const played = new Set(many.data.lineups.filter((l) => l.entered).map((l) => `${l.set_id}:${l.lineup_no}`));
+  const out = many.data.players.filter((p) => played.has(`${p.set_id}:${p.lineup_no}`) && isOut(byId.get(p.dk_id)));
+  if (out.length === 0) return null;
+  const hit = new Set(out.map((p) => `${p.set_id}:${p.lineup_no}`)).size;
+  return (
+    <div className="card card--pad" role="alert">
+      <p className="strong bad">{hit === 1 ? "One entered lineup has" : `${hit} entered lineups have`} a player who is ruled out</p>
+      <p className="small">{[...new Set(out.map((p) => p.name))].join(", ")}</p>
+      <Link className="btn btn--sm btn--primary" to="/lineups/swap">Swap them out</Link>
+    </div>
+  );
+}
+
 export function Lineups() {
   const { slate, isLoading } = useCurrentSlate();
   const sets = useSets(slate?.id);
@@ -91,15 +111,23 @@ export function Lineups() {
       <div>
         <p className="eyebrow">DraftKings · {slateTitle(slate.starts_at, slate.n_games)}</p>
         <h1 className="title">Lineups</h1>
-        <div className="inline">
-          <button className="btn btn--primary" onClick={() => openBuild()}>Build a set</button>
-          <Link className="btn" to="/lineups/build">Build one by hand</Link>
-        </div>
+        <GamesPicker />
+        {slate.upcoming ? (
+          <div className="inline">
+            <button className="btn btn--primary" onClick={() => openBuild()}>Build a set</button>
+            <Link className="btn" to="/lineups/build">Build one by hand</Link>
+          </div>
+        ) : (
+          <p className="small muted" role="status">These games have started. Their lineups are kept here with what they scored; nothing new can be built for them.</p>
+        )}
       </div>
-      {requests.map((c) => <RequestCard key={c.job.id} card={c} />)}
+      <ScratchAlert slate={slate} sets={all} />
+      {slate.upcoming && requests.map((c) => <RequestCard key={c.job.id} card={c} />)}
       <section className="stack stack--tight" aria-label="Automatic sets">
         <p className="eyebrow">Rebuilt whenever the numbers change</p>
-        {auto.length === 0 ? <Empty title="No lineups yet" why="They're built right after expected points are ready for these games." how="Check back in a few minutes, or build a set yourself." /> : auto.map((s) => <SetCard key={s.id} s={s} />)}
+        {auto.length === 0 ? (slate.upcoming
+          ? <Empty title="No lineups yet" why="They're built right after expected points are ready for these games." how="Check back in a few minutes, or build a set yourself." />
+          : <Empty title="No lineups were kept for these games" />) : auto.map((s) => <SetCard key={s.id} s={s} />)}
       </section>
       {mine.length > 0 && (
         <section className="stack stack--tight" aria-label="Your sets">
@@ -107,6 +135,7 @@ export function Lineups() {
           {mine.map((s) => <SetCard key={s.id} s={s} />)}
         </section>
       )}
+      <Entries slate={slate} sets={[...mine, ...auto]} />
       {archived.length > 0 && (
         <section className="stack stack--tight" aria-label="Archived sets">
           <button className="btn btn--quiet btn--sm" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
@@ -173,190 +202,5 @@ function BuildSheet({ slateId, onClose }: { slateId: number; onClose: () => void
         <button className="btn btn--cta" disabled={request.isPending} onClick={submit}>{request.isPending ? "Starting…" : `Build ${n} ${n === 1 ? "lineup" : "lineups"}`}</button>
       </div>
     </Sheet>
-  );
-}
-
-type SetSheet = { kind: "rename" } | { kind: "delete" } | { kind: "remove"; lineup: number };
-
-export function SetDetail() {
-  const id = Number(useParams().id);
-  const goUp = useGoUp();
-  const detail = useSet(Number.isFinite(id) ? id : undefined);
-  const entered = useSetEntered();
-  const rename = useRenameSet();
-  const archive = useArchiveSet();
-  const del = useDeleteSet();
-  const delLineup = useDeleteLineup();
-  const request = useRequestJob();
-  const { say } = useStore();
-  const [picked, setPicked] = useState<number | null | undefined>(undefined);   // undefined: the first lineup, until one is chosen
-  const [sheet, openSheet, closeSheet] = useSheet<SetSheet>("set");
-  const [draftName, setDraftName] = useState("");
-  const set = detail.data?.set ?? null;
-  const players = detail.data?.players ?? [];
-  const shares = useMemo(() => [...exposure(players).values()].sort((a, b) => b.count - a.count || (b.row.dk_mean ?? 0) - (a.row.dk_mean ?? 0)), [players]);
-  useTitle(setName(set));
-
-  if (detail.isLoading) return <Loading />;
-  if (detail.error) return <ErrorNote error={detail.error} />;
-  const lineups = detail.data?.lineups ?? [];
-  if (!set || lineups.length === 0) return <Empty title="This set is gone" why="It was deleted, or it never had a lineup." how={<button className="btn btn--quiet" onClick={() => goUp("/lineups")}>Back to Lineups</button>} />;
-
-  const open = picked === undefined ? lineups[0].lineup_no : picked;
-  const file = () => download(`bigsurf-${(set.label || set.mode).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "set"}-${id}.csv`,
-    toDkCsv(lineups.map((l) => players.filter((p) => p.lineup_no === l.lineup_no).sort((a, b) => a.slot_no - b.slot_no).map((p) => p.dk_id))));
-  const graded = lineups.some((l) => l.actual_points != null);
-  const built = describeSettings(set);
-  const stale = !set.on_latest_projections && set.source !== "manual";
-  // Automatic sets belong to the pipeline: it replaces them whenever the numbers change. Entering one makes it yours.
-  const yours = set.source !== "auto" || set.entered;
-  const failed = (what: string) => (e: Error) => say(`${what} — ${e.message}`, true);
-
-  function rebuild() {
-    request.mutate({ kind: "build_lineups", payload: rebuildPayload(set!) }, {
-      onSuccess: () => { say(`Build started — ready in ${BUILD_TIME}`); goUp("/lineups"); },
-      onError: failed("Couldn't start the build"),
-    });
-  }
-  function saveName() {
-    rename.mutate({ set_id: id, label: draftName.trim() || null }, {
-      onSuccess: () => { say(draftName.trim() ? "Renamed" : "Name cleared"); closeSheet(); },
-      onError: failed("Couldn't rename it"),
-    });
-  }
-  function setArchived(archived: boolean, leave: boolean) {
-    archive.mutate({ set_id: id, archived }, {
-      onSuccess: () => { say(archived ? "Archived — it's kept for results" : "Back on the Lineups screen"); if (leave) goUp("/lineups"); },
-      onError: failed(archived ? "Couldn't archive it" : "Couldn't restore it"),
-    });
-  }
-  function deleteSet() {
-    del.mutate({ set_id: id }, { onSuccess: () => { say("Set deleted"); goUp("/lineups"); }, onError: failed("Couldn't delete it") });
-  }
-  function removeLineup(lineupNo: number) {
-    delLineup.mutate({ set_id: id, lineup_no: lineupNo }, {
-      onSuccess: (left) => {
-        say(`Lineup ${lineupNo} removed`);
-        setPicked(undefined);
-        if (left === 0) goUp("/lineups"); else closeSheet();
-      },
-      onError: failed("Couldn't remove it"),
-    });
-  }
-
-  return (
-    <div className="stack">
-      <div>
-        <p className="eyebrow">{SOURCE[set.source] ?? set.source} · built {ago(set.created_at)}</p>
-        <h1 className="title">{setName(set)}</h1>
-        {built.length > 0 && <p className="small muted">{built.join(" · ")}</p>}
-        {set.archived_at && (
-          <div className="inline" role="status">
-            <p className="small">Archived: hidden from Lineups, kept for results.</p>
-            <button className="btn btn--sm" disabled={archive.isPending} onClick={() => setArchived(false, false)}>Put it back</button>
-          </div>
-        )}
-        {stale && (
-          <div className="inline" role="status">
-            <p className="small warn">Built on older numbers. Expected points have changed since{set.source === "auto" ? "; a fresh automatic set follows within minutes." : "."}</p>
-            {set.source === "user" && <button className="btn btn--sm" disabled={request.isPending} onClick={rebuild}>{request.isPending ? "Starting…" : "Rebuild with the same settings"}</button>}
-          </div>
-        )}
-        <div className="inline">
-          <button className="btn btn--primary" onClick={file}>Download for DraftKings</button>
-          <button className="btn" disabled={entered.isPending} onClick={() => entered.mutate({ set_id: id, entered: !set.entered }, { onSuccess: () => say(set.entered ? "Marked as not entered" : "Marked as entered"), onError: failed("Couldn't save that") })}>
-            {set.entered ? "Entered — undo" : "Mark as entered"}
-          </button>
-        </div>
-        <p className="small muted">Upload the file on DraftKings: Lineups → Upload lineups. Nothing is entered for you.</p>
-        {yours ? (
-          <div className="inline" role="group" aria-label="Manage this set">
-            <button className="btn btn--sm btn--quiet" onClick={() => { setDraftName(set.label ?? ""); openSheet({ kind: "rename" }); }}>Rename</button>
-            {!set.archived_at && <button className="btn btn--sm btn--quiet" disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive</button>}
-            <button className="btn btn--sm btn--quiet bad" onClick={() => openSheet({ kind: "delete" })}>Delete</button>
-          </div>
-        ) : (
-          <p className="small muted">Automatic sets are replaced when the numbers change. Mark this one as entered to keep it.</p>
-        )}
-      </div>
-      <div className="cols cols--wide">
-        <section className="card" aria-label="Lineups">
-          {lineups.map((l) => {
-            const mine = players.filter((p) => p.lineup_no === l.lineup_no);
-            return (
-              <div key={l.lineup_no} className="rowline">
-                <div className="grow">
-                  <button className="spread" onClick={() => setPicked(open === l.lineup_no ? null : l.lineup_no)} aria-expanded={open === l.lineup_no}>
-                    <span className="strong">Lineup {l.lineup_no}</span>
-                    <span className="num small">{usd(l.salary)} · <span className="accent strong">{pts(l.proj)}</span>{l.p10 != null ? ` · ${pts(l.p10, 0)}–${pts(l.p90, 0)}` : ""}{graded ? ` · scored ${pts(l.actual_points)}` : ""}</span>
-                  </button>
-                  {open === l.lineup_no && mine.map((p) => (
-                    <div className="prow" key={p.slot_no}>
-                      <span className="tag">{SLOT_LABEL[p.slot as Slot] ?? p.slot}</span>
-                      <div className="grow"><PlayerName name={p.name} status={p.status} /><p className="pmeta">{p.team} vs {p.opponent}</p></div>
-                      <p className="pnum num">{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
-                    </div>
-                  ))}
-                  {open === l.lineup_no && yours && !set.entered && (
-                    <button className="btn btn--sm btn--quiet bad" onClick={() => openSheet({ kind: "remove", lineup: l.lineup_no })}>Remove this lineup</button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </section>
-        <section className="card card--pad" aria-label="How often each player is used">
-          <div className="card__head"><h2 className="h2">Who you're relying on</h2><span className="small muted">Share of lineups</span></div>
-          {shares.map((e) => (
-            <div className="prow" key={e.row.dk_id}>
-              <PosTag pos={e.row.pos} />
-              <div className="grow"><PlayerName name={e.row.name} status={e.row.status} /><p className="pmeta">{e.row.team} · {usd(e.row.salary)}</p></div>
-              <p className="pnum num">{pct(e.share)}<small>{e.count} of {lineups.length}</small></p>
-            </div>
-          ))}
-        </section>
-      </div>
-
-      {sheet?.kind === "rename" && (
-        <Sheet title="Name this set" onClose={closeSheet}>
-          <form className="stack stack--tight" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
-            <label className="field"><span>Name</span>
-              <input className="input" type="text" maxLength={60} autoFocus placeholder={MODE[set.mode] ?? "Lineup set"} value={draftName} onChange={(e) => setDraftName(e.target.value)} />
-            </label>
-            <p className="small muted">Leave it empty to go back to "{MODE[set.mode] ?? "Lineup set"}".</p>
-            <button className="btn btn--cta" type="submit" disabled={rename.isPending}>{rename.isPending ? "Saving…" : "Save name"}</button>
-          </form>
-        </Sheet>
-      )}
-      {sheet?.kind === "delete" && (
-        <Sheet title={set.entered ? "This set was entered" : `Delete ${lineups.length === 1 ? "this lineup" : `these ${lineups.length} lineups`}?`} onClose={closeSheet}>
-          <div className="stack stack--tight">
-            {set.entered ? (
-              <>
-                <p>It is the record of what you played, so it can't be deleted. Archiving takes it off the Lineups screen and keeps it for results.</p>
-                <p className="small muted">To delete it anyway, undo "Entered" first.</p>
-                {!set.archived_at && <button className="btn btn--cta" disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive it</button>}
-              </>
-            ) : (
-              <>
-                <p>"{setName(set)}" will be removed for good. It can't be brought back.</p>
-                <button className="btn btn--cta btn--cta-danger" disabled={del.isPending} onClick={deleteSet}>{del.isPending ? "Deleting…" : "Delete"}</button>
-                {!set.archived_at && <button className="btn" disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive instead</button>}
-              </>
-            )}
-            <button className="btn btn--quiet" onClick={closeSheet}>Keep it</button>
-          </div>
-        </Sheet>
-      )}
-      {sheet?.kind === "remove" && (
-        <Sheet title={`Remove lineup ${sheet.lineup}?`} onClose={closeSheet}>
-          <div className="stack stack--tight">
-            <p>{lineups.length === 1 ? "It is the only lineup here, so the set goes with it." : `The other ${lineups.length - 1} stay.`} It can't be brought back.</p>
-            <button className="btn btn--cta btn--cta-danger" disabled={delLineup.isPending} onClick={() => removeLineup(sheet.lineup)}>{delLineup.isPending ? "Removing…" : "Remove"}</button>
-            <button className="btn btn--quiet" onClick={closeSheet}>Keep it</button>
-          </div>
-        </Sheet>
-      )}
-    </div>
   );
 }

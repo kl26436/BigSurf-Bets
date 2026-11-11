@@ -103,6 +103,8 @@ export interface LineupRow {
   p99: number | null;
   best_of_set_pct: number | null;
   actual_points: number | null;
+  entered: boolean;              // this lineup was played
+  edited_at: string | null;      // a player was swapped after the build
 }
 
 export interface LineupPlayer {
@@ -119,6 +121,19 @@ export interface LineupPlayer {
   salary: number;
   dk_mean: number | null;
   status: string | null;
+}
+
+/** One row of a DraftKings entries file: a contest entry and the lineup of ours it holds. */
+export interface DkEntry {
+  entry_id: string;
+  slate_id: number;
+  contest_id: string | null;
+  contest_name: string | null;
+  entry_fee: number | null;
+  players: string[] | null;
+  set_id: number | null;
+  lineup_no: number | null;
+  imported_at: string;
 }
 
 export interface LineQuote {
@@ -196,7 +211,8 @@ export interface Scorecard {
     projections?: { n_played: number; did_not_play: number; by_position: Record<string, { n: number; mae: number; bias: number; rank_corr: number | null; cover_p10_p90: number; vs_dk_avg?: { n: number; mae_model: number; mae_dk_avg: number } }> };
     // label / source / entered arrive with scorecards graded after November 2026; a lineup built by hand has no range
     lineups?: { set_id: number; mode: string; n: number; n_complete: number; avg_actual: number; best_actual: number; avg_projected: number | null;
-      in_p10_p90: number | null; label?: string | null; source?: string; entered?: boolean }[];
+      in_p10_p90: number | null; label?: string | null; source?: string; entered?: boolean;
+      n_entered?: number; entered_avg_actual?: number; entered_best_actual?: number }[];
     props?: { n: number; vs_pinnacle?: { n: number; logloss_model: number; logloss_pinnacle: number }; model_edges?: { n: number; wins: number; units: number; roi: number } };
   };
 }

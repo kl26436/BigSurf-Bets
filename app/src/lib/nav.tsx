@@ -2,7 +2,7 @@
 // edge swipe: Back closes a sheet before it leaves a screen, a new screen opens
 // at the top, Back returns to where you were, and "up" goes to the parent screen
 // without piling up history.
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 interface SheetState { name: string; value: unknown }
@@ -85,4 +85,17 @@ export function useTitle(title: string | null | undefined) {
   useEffect(() => {
     document.title = title ? `${title} · Big Surf Bets` : "Big Surf Bets";
   }, [title]);
+}
+
+/** Laptop-width screen: room to lay things side by side. Follows the window. */
+export function useWide(): boolean {
+  const query = "(min-width: 960px)";
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const on = () => setWide(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return wide;
 }

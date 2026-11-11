@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 11
+    assert len(db.migrate(url)) >= 12
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -141,7 +141,9 @@ def test_signed_in_stranger_sees_no_rows_and_cannot_write(db_url):
         for call in ["public.bsb_request_job('project')", "public.bsb_set_entered(1, true)",
                      "public.bsb_set_override(2026, 10, 'x', 12)", "public.bsb_save_settings('{}'::jsonb)",
                      "public.bsb_rename_set(1, 'x')", "public.bsb_archive_set(1)", "public.bsb_delete_set(1)",
-                     "public.bsb_delete_lineup(1, 1)", "public.bsb_dismiss_job(1)"]:
+                     "public.bsb_delete_lineup(1, 1)", "public.bsb_dismiss_job(1)", "public.bsb_set_lineups_entered(1, '{1}', true)",
+                     "public.bsb_replace_lineup(1, 1, '{a}')", "public.bsb_import_dk_entries(1, '[]'::jsonb)",
+                     "public.bsb_assign_entries('[]'::jsonb)"]:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(f"select {call}")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -272,8 +274,8 @@ def _stored_set(url: str, source: str, mode: str = "gpp", n: int = 2, entered: b
         ).fetchone()[0]
         for k in range(1, n + 1):
             c.execute(
-                "insert into bsb.lineups (set_id, lineup_no, salary, proj, sim_mean, p10, p50, p90, best_of_set_pct) values (%s, %s, 45000, %s, %s, %s, %s, %s, %s)",
-                (sid, k, 100 + k, *((101 + k, 80, 100, 125, 50) if simulated else (None, None, None, None, None))),
+                "insert into bsb.lineups (set_id, lineup_no, salary, proj, entered, sim_mean, p10, p50, p90, best_of_set_pct) values (%s, %s, 45000, %s, %s, %s, %s, %s, %s, %s)",
+                (sid, k, 100 + k, entered, *((101 + k, 80, 100, 125, 50) if simulated else (None, None, None, None, None))),
             )
             for i, (dk, pid, name, pos, team, opp, sal) in enumerate(nine):
                 c.execute(
@@ -317,7 +319,7 @@ def test_lineup_sets_can_be_named_trimmed_archived_and_removed(db_url):
 
         # an entered set is the record of what was played: no delete, no changes
         c.execute("select public.bsb_set_entered(%s, true)", (sid,))
-        for call in ("bsb_delete_set(%s)", "bsb_delete_lineup(%s, 1)"):
+        for call in ("bsb_delete_set(%s)", "bsb_delete_lineup(%s, 1)"):     # every lineup of it is entered
             with pytest.raises(psycopg.errors.RaiseException, match="entered"):
                 c.execute(f"select public.{call}", (sid,))
         assert row()[2] == 2
@@ -338,6 +340,99 @@ def test_lineup_sets_can_be_named_trimmed_archived_and_removed(db_url):
         assert c.execute("select dismissed_at from public.app_jobs where id = %s", (job,)).fetchone()[0] is None
         c.execute("select public.bsb_dismiss_job(%s)", (job,))
         assert c.execute("select dismissed_at from public.app_jobs where id = %s", (job,)).fetchone()[0] is not None
+
+
+def test_entered_is_per_lineup_and_a_player_can_be_swapped(db_url):
+    sid = _stored_set(db_url, "user", n=3)
+    with As(db_url, "authenticated", ALICE) as c:
+        flags = lambda: [r[0] for r in c.execute("select entered from public.app_lineups where set_id = %s order by lineup_no", (sid,))]  # noqa: E731
+        set_entered = lambda: c.execute("select entered from public.app_lineup_sets where id = %s", (sid,)).fetchone()[0]  # noqa: E731
+        assert c.execute("select public.bsb_set_lineups_entered(%s, %s, true)", (sid, [2])).fetchone()[0] == 1
+        assert flags() == [False, True, False] and set_entered() is True
+        # a lineup that was not played can go; the one that was cannot, and neither can the set
+        assert c.execute("select public.bsb_delete_lineup(%s, 1)", (sid,)).fetchone()[0] == 2
+        for call in ("bsb_delete_lineup(%s, 2)", "bsb_delete_set(%s)"):
+            with pytest.raises(psycopg.errors.RaiseException, match="entered"):
+                c.execute(f"select public.{call}", (sid,))
+        assert c.execute("select public.bsb_set_lineups_entered(%s, %s, false)", (sid, [2])).fetchone()[0] == 0
+        assert set_entered() is False
+        c.execute("select public.bsb_set_entered(%s, true)", (sid,))
+        assert flags() == [True, True]
+        c.execute("select public.bsb_set_entered(%s, false)", (sid,))
+
+        # swap: a legal nine replaces lineup 2; its simulated numbers no longer describe it
+        nine = _legal_nine(c)
+        c.execute("select public.bsb_replace_lineup(%s, 2, %s)", (sid, nine))
+        got = [r[0] for r in c.execute("select dk_id from public.app_lineup_players where set_id = %s and lineup_no = 2 order by slot_no", (sid,))]
+        assert got == nine
+        salary, proj, p10, best, edited = c.execute(
+            "select salary, proj, p10, best_of_set_pct, edited_at from public.app_lineups where set_id = %s and lineup_no = 2", (sid,)).fetchone()
+        assert salary <= 50000 and proj > 0 and p10 is None and best is None and edited is not None
+        assert "set_best_mean" not in c.execute("select summary from public.app_lineup_sets where id = %s", (sid,)).fetchone()[0]
+        with pytest.raises(psycopg.errors.RaiseException, match="nine"):
+            c.execute("select public.bsb_replace_lineup(%s, 2, %s)", (sid, nine[:8]))
+        with pytest.raises(psycopg.errors.RaiseException, match="no such lineup"):
+            c.execute("select public.bsb_replace_lineup(%s, 99, %s)", (sid, nine))
+        # a player whose game has started can be neither taken out nor put in
+        other_te = c.execute("select dk_id, game_id from public.app_pool where pos = 'TE' and dk_id <> %s order by salary limit 1", (nine[6],)).fetchone()
+    swapped = [*nine[:6], other_te[0], *nine[7:]]
+    with psycopg.connect(db_url) as c:
+        before = c.execute("select kickoff_at from bsb.games where game_id = %s", (other_te[1],)).fetchone()[0]
+        c.execute("update bsb.games set kickoff_at = now() - interval '5 minutes' where game_id = %s", (other_te[1],))
+        c.commit()
+    try:
+        with As(db_url, "authenticated", ALICE) as c:
+            with pytest.raises(psycopg.errors.RaiseException, match="started"):
+                c.execute("select public.bsb_replace_lineup(%s, 2, %s)", (sid, swapped))
+    finally:
+        with psycopg.connect(db_url) as c:
+            c.execute("update bsb.games set kickoff_at = %s where game_id = %s", (before, other_te[1]))
+            c.commit()
+    with As(db_url, "authenticated", ALICE) as c:
+        c.execute("select public.bsb_replace_lineup(%s, 2, %s)", (sid, swapped))        # before kickoff it goes through
+        c.execute("select public.bsb_replace_lineup(%s, 2, %s)", (sid, nine))
+
+
+def test_draftkings_entries_are_linked_to_lineups(db_url):
+    sid = _stored_set(db_url, "user", n=3)
+    with As(db_url, "authenticated", ALICE) as c:
+        nine = _legal_nine(c)
+        # a nine no other stored lineup has (an earlier test saved the cheapest one by hand)
+        nine[6] = c.execute("select dk_id from public.app_pool where pos = 'TE' and dk_id <> %s order by salary desc limit 1", (nine[6],)).fetchone()[0]
+        c.execute("select public.bsb_replace_lineup(%s, 1, %s)", (sid, nine))
+        entries = [{"entry_id": "e1", "contest_id": "c9", "contest_name": "NFL $5 Double Up", "entry_fee": "5", "players": list(reversed(nine))},
+                   {"entry_id": "e2", "contest_id": "c9", "contest_name": "NFL $5 Double Up", "entry_fee": "5", "players": None}]
+        out = c.execute("select public.bsb_import_dk_entries(1, %s::jsonb)", (json.dumps(entries),)).fetchone()[0]
+        assert out == {"entries": 2, "linked": 1}
+        rows = {r[0]: r[1:] for r in c.execute("select entry_id, set_id, lineup_no, entry_fee from public.app_dk_entries where slate_id = 1")}
+        assert rows["e1"] == (sid, 1, 5) and rows["e2"][:2] == (None, None)        # same players in any order is the same lineup
+        assert c.execute("select entered from public.app_lineups where set_id = %s and lineup_no = 1", (sid,)).fetchone()[0] is True
+        assert c.execute("select entered from public.app_lineup_sets where id = %s", (sid,)).fetchone()[0] is True
+
+        # put a lineup on the empty entry, then take it off again
+        assert c.execute("select public.bsb_assign_entries(%s::jsonb)", (json.dumps([{"entry_id": "e2", "set_id": sid, "lineup_no": 3}]),)).fetchone()[0] == 1
+        assert c.execute("select set_id, lineup_no from public.app_dk_entries where entry_id = 'e2'").fetchone() == (sid, 3)
+        assert c.execute("select entered from public.app_lineups where set_id = %s and lineup_no = 3", (sid,)).fetchone()[0] is True
+        with pytest.raises(psycopg.errors.RaiseException, match="same games"):
+            c.execute("select public.bsb_assign_entries(%s::jsonb)", (json.dumps([{"entry_id": "e2", "set_id": 999999, "lineup_no": 1}]),))
+        c.execute("select public.bsb_assign_entries(%s::jsonb)", (json.dumps([{"entry_id": "e2", "set_id": None}]),))
+        assert c.execute("select set_id, lineup_no from public.app_dk_entries where entry_id = 'e2'").fetchone() == (None, None)
+
+        # a fresh file replaces the list: an entry no longer in it was withdrawn; links that still hold are kept
+        out = c.execute("select public.bsb_import_dk_entries(1, %s::jsonb)", (json.dumps(entries[:1]),)).fetchone()[0]
+        assert out == {"entries": 1, "linked": 1}
+        assert [r[0] for r in c.execute("select entry_id from public.app_dk_entries")] == ["e1"]
+        for bad in ("[]", '[{"contest_id": "x"}]', '{"entry_id": "e"}'):
+            with pytest.raises(psycopg.errors.RaiseException):
+                c.execute("select public.bsb_import_dk_entries(1, %s::jsonb)", (bad,))
+        # removing the lineup an entry holds leaves the entry, unlinked
+        c.execute("select public.bsb_set_entered(%s, false)", (sid,))
+        c.execute("select public.bsb_delete_set(%s)", (sid,))
+        assert c.execute("select set_id, lineup_no from public.app_dk_entries where entry_id = 'e1'").fetchone() == (None, None)
+        c.execute("select public.bsb_import_dk_entries(1, %s::jsonb)", (json.dumps([{"entry_id": "gone", "players": None}]),))
+    with psycopg.connect(db_url) as c:
+        c.execute("delete from bsb.dk_entries")
+        c.commit()
 
 
 def test_scorecard_reports_the_sets_on_the_lineups_screen_and_entered_ones(db_url):
@@ -363,6 +458,8 @@ def test_scorecard_reports_the_sets_on_the_lineups_screen_and_entered_ones(db_ur
     by_set = {m["set_id"]: m for m in scorecard.lineup_metrics(lu)}
     assert by_set[mine]["label"] == "Low risk" and by_set[mine]["source"] == "user" and by_set[mine]["entered"] is False
     assert by_set[mine]["in_p10_p90"] == 1.0 and by_set[mine]["avg_projected"] == 102.5
+    assert by_set[mine]["n_entered"] == 0 and "entered_avg_actual" not in by_set[mine]
+    assert by_set[binned_but_played]["n_entered"] == 2 and by_set[binned_but_played]["entered_avg_actual"] == 110.0
     hand = by_set[by_hand]                      # no simulation behind a hand-built lineup: graded on its projection
     assert hand["avg_actual"] == 110.0 and hand["avg_projected"] == 101.0 and hand["in_p10_p90"] is None
     assert "inside the 80% range" not in scorecard.to_text(

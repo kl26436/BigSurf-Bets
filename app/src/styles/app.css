@@ -102,6 +102,9 @@ a.card { display: block; }
 .right { text-align: right; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inline { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.inline--row { flex-wrap: nowrap; }
+.inline--row > .tag { flex: none; padding: 0 var(--space-2); }
+.block { display: block; }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 progress.bar { appearance: none; width: 100%; height: 6px; border: 0; border-radius: var(--radius-pill); background: var(--semantic-border-default); overflow: hidden; display: block; margin-top: var(--space-3); }
 progress.bar::-webkit-progress-bar { background: var(--semantic-border-default); }
@@ -147,6 +150,7 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
 .iconbtn.off { background: var(--semantic-status-dangerBg); color: var(--semantic-status-danger); }
 .chips { display: flex; gap: var(--space-2); overflow-x: auto; scrollbar-width: none; padding-bottom: var(--space-1); }
 .chips::-webkit-scrollbar { display: none; }
+.chips--wrap { flex-wrap: wrap; overflow-x: visible; }
 .chip { flex: none; min-height: var(--size-tapSm); padding: var(--space-2) var(--space-4); border-radius: var(--component-chip-radius); background: var(--semantic-bg-surface);
   border: 1px solid transparent; color: var(--semantic-text-main); font-family: var(--font-display); font-weight: var(--typography-weight-display);
   font-size: var(--typography-size-lg); letter-spacing: var(--typography-tracking-eyebrow); text-transform: uppercase; line-height: var(--typography-lineHeight-tight); text-align: center; }
@@ -225,3 +229,21 @@ button.spread { width: 100%; min-height: var(--size-tapMin); }
 .prow--pick { grid-template-columns: 44px minmax(0, 1fr) auto var(--size-tapMin); }
 .prow__open { grid-column: 2 / -1; }
 .sticky-cta__note { padding-bottom: var(--space-2); text-align: center; }
+
+/* ---- lineup sets: a grid of lineups, each a small card ------------------------ */
+.lgrid { display: grid; gap: var(--space-layout-itemGap); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
+.lcard { border: 1px solid transparent; }
+.lcard--on { border-color: var(--semantic-accent-border); background: var(--semantic-bg-cardHi); }
+.lcard__nums { display: flex; flex-direction: column; gap: var(--space-0-5); width: 100%; padding: var(--space-1) 0 var(--space-2); }
+.lcard__nums:disabled { cursor: default; }
+.prow--tight { padding: var(--space-2) 0; min-height: 0; }
+.pgrid { display: grid; column-gap: var(--space-6); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.inline--center { justify-content: center; }
+.swap { padding: var(--space-2) 0; border-bottom: 1px solid var(--semantic-border-soft); }
+.swap:last-child { border-bottom: 0; }
+.title + .field { margin-bottom: var(--space-3); }
+
+/* the file chooser's own button, dressed as a small secondary button */
+.input[type="file"] { padding: var(--space-2); color: var(--semantic-text-muted); font-size: var(--typography-size-sm); }
+.input[type="file"]::file-selector-button { margin-right: var(--space-3); min-height: var(--size-tapSm); padding: 0 var(--space-3); border: 0; border-radius: var(--component-chip-radius);
+  background: var(--semantic-bg-cardHi); color: var(--semantic-text-main); font: inherit; font-weight: var(--typography-weight-semibold); cursor: pointer; }

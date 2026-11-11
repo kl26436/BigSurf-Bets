@@ -142,6 +142,12 @@ def lineup_metrics(lineups: pl.DataFrame) -> list[dict]:
         for k in ("label", "source", "entered"):       # what the Results screen titles the set with
             if k in has:
                 m[k] = g[k][0]
+        if "lineup_entered" in has:                    # the lineups that were actually played, apart from the rest
+            played = done.filter(pl.col("lineup_entered"))
+            m["n_entered"] = int(g["lineup_entered"].sum())
+            if played.height:
+                e = played["actual"].to_numpy().astype(float)
+                m.update(entered_avg_actual=round(float(e.mean()), 2), entered_best_actual=round(float(e.max()), 2))
         out.append(m)
     return out
 
@@ -153,7 +159,7 @@ def lineup_metrics(lineups: pl.DataFrame) -> list[dict]:
 GRADED_LINEUPS_SQL = """
 select l.set_id, ls.mode, l.lineup_no, l.actual_points::float8, l.p10::float8, l.p50::float8,
        l.p90::float8, l.sim_mean::float8, l.actual_points is not null, l.proj::float8,
-       ls.label, ls.source, ls.entered
+       ls.label, ls.source, ls.entered, l.entered
 from bsb.lineups l join bsb.lineup_sets ls on ls.id = l.set_id
 join bsb.dfs_slates sl on sl.id = ls.slate_id
 where sl.season = %s and sl.week = %s
@@ -167,7 +173,7 @@ where sl.season = %s and sl.week = %s
 order by l.set_id, l.lineup_no"""
 
 GRADED_LINEUPS_COLUMNS = ["set_id", "mode", "lineup_no", "actual", "p10", "p50", "p90", "sim_mean", "complete", "proj",
-                          "label", "source", "entered"]
+                          "label", "source", "entered", "lineup_entered"]
 
 
 def graded_lineups(conn, season: int, week: int) -> pl.DataFrame:
