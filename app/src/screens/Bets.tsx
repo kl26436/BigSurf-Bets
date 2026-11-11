@@ -352,6 +352,7 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
           {r.settled === 0 ? "No settled bets yet. " : `${r.won} won, ${r.lost} lost${r.returned ? `, ${r.returned} stake back` : ""}${r.roi != null ? ` · ${signed(r.roi * 100)}% on money staked` : ""}. `}
           {r.closeAvg != null ? `On average your prices were ${Math.abs(r.closeAvg * 100).toFixed(1)}% ${r.closeAvg >= 0 ? "better" : "worse"} than the closing price. ` : ""}
           Beating the closing price is the early sign of an edge: a few dozen results say little, the closing price says a lot.
+          The close used here is the sharp book's price at the last check before kickoff, for game bets.
         </p>
         <div className="inline">
           <button className="btn btn--primary" onClick={() => record(blank)}>Record a bet</button>
@@ -377,7 +378,7 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
           <div className="stack stack--tight">
             <p className="small muted num">{bookName(picked.bookmaker)} · {odds(decimalToAmerican(picked.price_decimal))} · stake {usd2(picked.stake)} · placed {ago(picked.placed_at)}</p>
             {picked.away_team && <p className="small muted">{picked.away_team} at {picked.home_team} · {kickoff(picked.kickoff_at)}</p>}
-            {picked.fair_prob != null && <p className="small muted num">True chance when placed {pct(picked.fair_prob, 1)}{picked.closing_fair != null ? ` · at kickoff ${pct(picked.closing_fair, 1)}` : ""}.</p>}
+            {picked.fair_prob != null && <p className="small muted num">True chance when placed {pct(picked.fair_prob, 1)}{picked.closing_fair != null ? ` · at the last price check before kickoff ${pct(picked.closing_fair, 1)}` : ""}.</p>}
             {picked.result !== "open" && <p className="small">{RESULT[picked.result]}{picked.graded_by === "score" ? ", settled from the final score" : ", marked by hand"}.</p>}
             <p className="eyebrow">{picked.result === "open" ? "How did it end?" : "Change the result"}</p>
             <div className="inline">
