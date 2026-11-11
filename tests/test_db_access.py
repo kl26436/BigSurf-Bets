@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 14
+    assert len(db.migrate(url)) >= 16
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -698,6 +698,75 @@ def test_waiver_bids_run_end_to_end_and_only_members_read_them(db_url):
         run = c.execute("select week, teams_left, budget, jsonb_array_length(teams) from public.app_waiver_run").fetchone()
         assert run == (10, 3, 700, 3)
         assert c.execute("select count(*) from public.app_waiver_recs").fetchone()[0] == n
+        lineup, coming, advice, grade = c.execute("select lineup, coming, advice, grade from public.app_waiver_run").fetchone()
+        assert sum(1 for d in lineup if d["start"]) == 7 and {d["spot"] for d in lineup if d["start"]} >= {"QB", "RB1", "FLEX"}
+        assert {x["owner"] for x in coming} == {"rival", "other"} and all(0 <= x["chop_1"] <= x["chop_3"] <= 1 for x in coming)
+        assert advice["verdict"] in ("now", "wait", "either", "hold") and advice["needs"]
+        assert grade is None                                             # no auction has been settled since a run priced it
+
+    # the auction settles: a rival wins the top-ranked player, I lose a lower bid on him, and I win the second
+    with psycopg.connect(db_url) as c:
+        (r1, s1, b50, b80, b95), (r2, s2, *_) = c.execute(
+            "select rank, sleeper_id, bid_50, bid_80, bid_95 from bsb.waiver_recs where run_id = %s and rank <= 2 order by rank", (run_id,)).fetchall()
+        when = datetime.now(UTC) + timedelta(minutes=30)
+        tx = [("t-a", 2, s1, b80, "complete"), ("t-b", 1, s1, 5, "failed"), ("t-c", 1, s2, 9, "complete")]
+        for tid, rid, sleeper, amount, status in tx:
+            c.execute(
+                """insert into bsb.fantasy_transactions (transaction_id, league_id, leg, type, status, roster_id, player_id, bid, status_updated)
+                   values (%s, %s, 10, 'waiver', %s, %s, %s, %s, %s)""", (tid, lid, status, rid, sleeper, amount, when))
+        c.commit()
+        g = bids.grade_prices(c, lid)
+        assert g["run_id"] == run_id and g["n"] == 2
+        top, second = g["rows"]
+        assert top["top_rival"] == b80 and top["won_by"] == "rival" and top["i_won"] is False and top["my_bid"] == 5
+        assert second["top_rival"] == 0 and second["i_won"] is True and second["paid"] == 9
+        assert g["beat_50"] == 1 + (b50 > b80) and g["beat_80"] == 1 and g["beat_95"] == 1 + (b95 > b80)
+        bids.run(c, n_sim=500)                                           # the next run carries the grade with it
+    with As(db_url, "authenticated", ALICE) as c:
+        assert c.execute("select grade->>'n' from public.app_waiver_run").fetchone()[0] == "2"
+
+
+def test_price_a_line_shapes_and_player_results_reach_the_app(db_url):
+    """The projection run saves the model's outcome shapes once per stat; the
+    scorecard keeps what was expected beside what happened. Members read both."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from model import project
+    from model.dist import Empirical, NegBin
+
+    rng = np.random.default_rng(1)
+    mu = rng.gamma(2, 3, 3000)
+    model = SimpleNamespace(dists={
+        "receptions": NegBin.fit(mu, rng.poisson(mu)),
+        "receiving_yards": Empirical.fit(mu * 10, mu * 10 * rng.lognormal(0, 0.4, 3000)),
+    })
+    with psycopg.connect(db_url) as c:
+        assert project.save_dists(c, model, None) == 2 and project.save_dists(c, model, None) == 2    # replaced, not appended
+        pid = c.execute("select player_id from bsb.players where position = 'WR' order by player_id limit 1").fetchone()[0]
+        c.execute("""insert into bsb.player_results (sport, season, week, player_id, position, team, dk, ppr, proj_dk, proj_p10, proj_p90)
+                     values ('nfl', 2026, 9, %s, 'WR', 'AAA', 21.5, 20, 12.0, 4, 22), ('nfl', 2026, 9, 'nobody-expected', 'WR', 'AAA', 3, 3, null, null, null)""", (pid,))
+        c.commit()
+    with As(db_url, "anon") as c:
+        for v in ("app_model_dists", "app_player_results", "app_prop_results", "app_overrides", "app_model_runs"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(f"select 1 from public.{v} limit 1")
+    with As(db_url, "authenticated", BOB) as c:
+        assert c.execute("select count(*) from public.app_model_dists").fetchone()[0] == 0
+    with As(db_url, "authenticated", ALICE) as c:
+        rows = dict((r[0], (r[1], r[2])) for r in c.execute("select stat, kind, params from public.app_model_dists"))
+        assert rows["receptions"][0] == "nb" and rows["receptions"][1]["edges"][-1] is None
+        emp = rows["receiving_yards"][1]
+        assert rows["receiving_yards"][0] == "emp" and len(emp["quantiles"]) == len(emp["edges"]) and len(emp["quantiles"][0]) == 201
+        got = c.execute("select player_id, dk, proj_dk, miss from public.app_player_results where season = 2026 and week = 9").fetchall()
+        assert [(r[0], float(r[1]), float(r[2]), float(r[3])) for r in got] == [(pid, 21.5, 12.0, 9.5)]
+        c.execute("select public.bsb_set_override(2026, 10, %s, 17.5, 'hunch')", (pid,))
+        o = c.execute("select player_id, dk_mean, this_week, name is not null from public.app_overrides").fetchall()
+        assert (pid, 17.5, True, True) in [(r[0], float(r[1]), r[2], r[3]) for r in o]
+        c.execute("select public.bsb_set_override(2026, 10, %s, null)", (pid,))
+        assert c.execute("select count(*) from public.app_overrides where player_id = %s", (pid,)).fetchone()[0] == 0
+        assert c.execute("select count(*) from public.app_model_runs").fetchone()[0] >= 1
 
 
 # ---- what changed, and telling people -----------------------------------------------------

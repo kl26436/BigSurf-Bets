@@ -96,6 +96,7 @@ export function Builder() {
         <progress className={`bar ${c.left < 0 ? "bar--over" : ""}`} max={slate.salary_cap} value={Math.min(c.salary, slate.salary_cap)} aria-label="Budget used" />
         <Facts items={[c.perOpenSpot != null ? `${usd(c.perOpenSpot)} per open spot` : null, `${c.filled} of 9 players`, `locks ${kickoff(slate.starts_at)}`]} />
         {c.problems.map((m) => <p key={m} className="small bad" role="alert">{m}</p>)}
+        {c.warnings.map((m) => <p key={m} className="small warn" role="status">{m}</p>)}
       </section>
 
       <section className="card" aria-label="Roster">

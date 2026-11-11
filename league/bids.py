@@ -88,7 +88,10 @@ def _players(conn, season: int, week: int) -> dict[str, Player]:
                   st.roster_status, p.ppr_mean, p.ppr_std, f.g, f.avg_ppr, f.recent
            from st
            left join bsb.players pl on pl.sport = 'nfl' and pl.player_id = st.player_id
-           left join bsb.projections_latest p on p.player_id = st.player_id and p.season = %(s)s and p.week = %(wk)s
+           left join lateral (
+               select q.ppr_mean, q.ppr_std from bsb.projections q
+               where q.sport = 'nfl' and q.player_id = st.player_id and q.season = %(s)s and q.week = %(wk)s
+               order by q.run_id desc limit 1) p on true
            left join form f on f.player_id = st.player_id
            where st.position in ('QB','RB','WR','TE')""",
         {"s": season, "wk": week},
@@ -142,11 +145,14 @@ def save(conn: psycopg.Connection, league_id: str, res: Result) -> int:
         for i, t in enumerate(lg.teams)
     ]
     run_id = conn.execute(
-        """insert into bsb.waiver_runs (league_id, week, teams_left, budget, chop, win, dollar_value, teams, drops)
-           values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
+        """insert into bsb.waiver_runs (league_id, week, teams_left, budget, chop, win, dollar_value, teams, drops,
+                                        lineup, coming, advice, grade)
+           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id""",
         (league_id, lg.week, len(lg.teams), round(lg.me.budget), float(res.odds.chop_now[me_i]),
          float(res.odds.win[me_i]), res.dollar_value, Jsonb(teams),
-         Jsonb([{"name": p.name, "pos": p.pos, "loss": round(loss, 2)} for p, loss in res.drops[:4]])),
+         Jsonb([{"name": p.name, "pos": p.pos, "loss": round(loss, 2)} for p, loss in res.drops[:4]]),
+         Jsonb(res.lineup), Jsonb(res.coming), Jsonb({**res.advice, "needs": res.needs}),
+         Jsonb(grade) if (grade := grade_prices(conn, league_id)) else None),
     ).fetchone()[0]
     for rank, r in enumerate(res.recs, 1):
         p = r.player
@@ -160,6 +166,68 @@ def save(conn: psycopg.Connection, league_id: str, res: Result) -> int:
         )
     conn.commit()
     return run_id
+
+
+def grade_prices(conn: psycopg.Connection, league_id: str) -> dict | None:
+    """How the last priced auction came out. Takes the newest run made before
+    the most recent waiver results, and for every player it priced that drew a
+    bid from a rival, sets the highest rival bid beside the three prices
+    (meant to beat it 50 / 80 / 95% of the time)."""
+    last = conn.execute(
+        """select max(status_updated) from bsb.fantasy_transactions
+           where league_id = %s and type = 'waiver' and status_updated is not null""",
+        (league_id,),
+    ).fetchone()[0]
+    if last is None:
+        return None
+    run = conn.execute(
+        """select id, week, created_at from bsb.waiver_runs
+           where league_id = %s and created_at < %s - interval '10 minutes'
+             and created_at > %s - interval '5 days'
+           order by created_at desc limit 1""",
+        (league_id, last, last),
+    ).fetchone()
+    if not run:
+        return None
+    run_id, week, made = run
+    rows = conn.execute(
+        """with me as (
+               select roster_id from bsb.fantasy_roster_snapshots
+               where league_id = %(l)s and is_me order by captured_at desc limit 1),
+           owners as (
+               select distinct on (roster_id) roster_id, owner_name from bsb.fantasy_roster_snapshots
+               where league_id = %(l)s order by roster_id, captured_at desc),
+           bids as (
+               select t.player_id, t.roster_id, t.bid, t.status from bsb.fantasy_transactions t
+               where t.league_id = %(l)s and t.type = 'waiver' and t.player_id is not null
+                 and t.status_updated > %(made)s and t.status_updated <= %(last)s + interval '1 hour')
+           select c.name, c.pos, c.bid_50, c.bid_80, c.bid_95, c.bid,
+                  (select max(b.bid) from bids b where b.player_id = c.sleeper_id and b.roster_id <> (select roster_id from me)),
+                  (select o.owner_name from bids b join owners o on o.roster_id = b.roster_id
+                   where b.player_id = c.sleeper_id and b.status = 'complete' limit 1),
+                  (select b.bid from bids b where b.player_id = c.sleeper_id and b.status = 'complete' limit 1),
+                  exists (select 1 from bids b where b.player_id = c.sleeper_id and b.status = 'complete'
+                          and b.roster_id = (select roster_id from me)),
+                  (select max(b.bid) from bids b where b.player_id = c.sleeper_id and b.roster_id = (select roster_id from me))
+           from bsb.waiver_recs c where c.run_id = %(run)s order by c.rank""",
+        {"l": league_id, "made": made, "last": last, "run": run_id},
+    ).fetchall()
+    out = []
+    for name, pos, b50, b80, b95, bid, rival, winner, paid, mine, my_bid in rows:
+        if rival is None and winner is None:
+            continue                                   # nobody bid on him: nothing to compare
+        rival = float(rival or 0)
+        out.append({"name": name, "pos": pos, "bid_50": b50, "bid_80": b80, "bid_95": b95, "suggested": bid,
+                    "top_rival": round(rival), "won_by": winner, "paid": round(float(paid)) if paid is not None else None,
+                    "i_won": bool(mine), "my_bid": round(float(my_bid)) if my_bid is not None else None})
+    if not out:
+        return None
+    n = len(out)
+    return {
+        "run_id": run_id, "week": week, "priced_at": made.isoformat(), "settled_at": last.isoformat(), "n": n,
+        "beat_50": sum(r["bid_50"] > r["top_rival"] for r in out), "beat_80": sum(r["bid_80"] > r["top_rival"] for r in out),
+        "beat_95": sum(r["bid_95"] > r["top_rival"] for r in out), "rows": out,
+    }
 
 
 def report(res: Result) -> str:
@@ -181,6 +249,18 @@ def report(res: Result) -> str:
                      f"{r.d_win:+6.1%} {f'{r.bid_50}/{r.bid_80}/{r.bid_95}':>16s} {r.bid or '':>5} "
                      f"{f'{r.win_at_bid:.0%}' if r.bid else '':>5s}  {note}")
     lines += ["", "Least valuable on your roster: " + ", ".join(f"{p.name} ({loss:.1f})" for p, loss in res.drops[:4])]
+    lines += ["", "Start: " + ", ".join(f"{d['spot']} {d['name']} ({d['mean']})" for d in res.lineup if d["start"])]
+    lines += ["Sit:   " + ", ".join(f"{d['name']} ({d['mean']})" for d in res.lineup if not d["start"])]
+    if res.needs:
+        lines += ["Weakest spots vs the league: " + ", ".join(f"{d['spot']} {d['gap']:+.1f}" for d in res.needs[:3])]
+    lines += ["", f"{'coming free':18s} {'this wk':>8s} {'3 wks':>6s}  best players for you (+points a week)"]
+    for c in res.coming:
+        lines.append(f"{c['owner'][:18]:18s} {c['chop_1']:8.1%} {c['chop_3']:6.1%}  "
+                     + ", ".join(f"{p['name']} +{p['gain']}" for p in c["players"]))
+    a = res.advice
+    if a:
+        lines += ["", f"Bid now or wait: {a['verdict']} (best now +{a['now']['gain'] if a.get('now') else 0}, "
+                      f"expected best next week +{a['later_gain']})"]
     return "\n".join(lines)
 
 

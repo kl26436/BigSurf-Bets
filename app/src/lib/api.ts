@@ -7,7 +7,7 @@ import * as demo from "./demo";
 import {
   DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
-  type PushDevice, type SentNote, type WaiverRec, type WaiverRun,
+  type PushDevice, type SentNote, type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
 } from "./types";
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -28,7 +28,8 @@ function num<T>(rows: T[]): T[] {
   return rows;
 }
 
-const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description", "title", "body", "target", "device"]);
+const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description", "title", "body", "target", "device",
+  "git_sha", "model_version", "entry_name"]);
 
 /** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
 async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
@@ -131,6 +132,22 @@ export const useWaiverRecs = () =>
   useQuery({ queryKey: ["waiver-recs"], queryFn: () => (DEMO ? demo.waiverRecs : all<WaiverRec>("app_waiver_recs", (q) => q.order("rank"))) });
 export const useFreeAgents = () =>
   useQuery({ queryKey: ["free-agents"], queryFn: () => (DEMO ? demo.freeAgents : all<RosterPlayer>("app_free_agents", (q) => q.order("ppr_mean", { ascending: false }), 40)) });
+/** The model's outcome shapes, by stat: what Price a line reads a chance from. */
+export const useModelDists = () =>
+  useQuery({ queryKey: ["dists"], staleTime: 30 * MIN, queryFn: async () => {
+    const rows = DEMO ? demo.dists : await all<ModelDist>("app_model_dists");
+    return new Map(rows.map((d) => [d.stat, d]));
+  } });
+export const usePlayerResults = (season: number | undefined, week: number | undefined) =>
+  useQuery({ queryKey: ["player-results", season, week], enabled: season != null && week != null, staleTime: 30 * MIN,
+    queryFn: () => (DEMO ? demo.playerResults : all<PlayerResult>("app_player_results", (q) => q.eq("season", season).eq("week", week).order("miss", { ascending: false }))) });
+export const usePropResults = (season: number | undefined, week: number | undefined) =>
+  useQuery({ queryKey: ["prop-results", season, week], enabled: season != null && week != null, staleTime: 30 * MIN,
+    queryFn: () => (DEMO ? demo.propResults : all<PropResult>("app_prop_results", (q) => q.eq("season", season).eq("week", week).not("model_side", "is", null))) });
+export const useOverrides = () =>
+  useQuery({ queryKey: ["overrides"], queryFn: () => (DEMO ? demo.listOverrides() : all<Override>("app_overrides", (q) => q.order("updated_at", { ascending: false }), 100)) });
+export const useModelRuns = () =>
+  useQuery({ queryKey: ["model-runs"], queryFn: () => (DEMO ? demo.modelRuns : all<ModelRun>("app_model_runs", (q) => q.order("created_at", { ascending: false }), 12)) });
 export const useJobs = () =>
   useQuery({ queryKey: ["jobs"], queryFn: () => (DEMO ? demo.jobs() : all<Job>("app_jobs", (q) => q.order("created_at", { ascending: false }), 15)),
     refetchInterval: (q) => ((q.state.data ?? []).some((j) => ["queued", "dispatched", "running"].includes(j.status)) ? 8000 : MIN) });
@@ -157,7 +174,7 @@ export const useRequestJob = () =>
 export const useSetOverride = () =>
   useWrite((a: { season: number; week: number; player_id: string; dk_mean: number | null; note?: string }) =>
     DEMO ? demo.setOverride(a.player_id, a.dk_mean) : rpc("bsb_set_override", { p_season: a.season, p_week: a.week, p_player_id: a.player_id, p_dk_mean: a.dk_mean, p_note: a.note ?? null }),
-    ["pool", "projections"]);
+    ["pool", "projections", "overrides"]);
 export const useSaveLineup = () =>
   useWrite((a: { slate_id: number; players: string[]; label?: string }) =>
     DEMO ? demo.saveLineup(a.players, a.label) : rpc<number>("bsb_save_lineup", { p_slate_id: a.slate_id, p_players: a.players, p_label: a.label ?? null }), ["sets"]);
@@ -223,7 +240,7 @@ export const useClaim = () => useWrite((_: void) => rpc<string>("bsb_claim_owner
 const CHANGES: Record<string, string[]> = {
   build_lineups: ["sets", "set"],
   import_slate: ["slates", "pool", "sets", "health"],
-  project: ["pool", "projections", "sets", "set", "props", "roster", "free-agents", "health"],
+  project: ["pool", "projections", "sets", "set", "props", "roster", "free-agents", "health", "dists", "model-runs", "waiver-run", "waiver-recs"],
   refresh_status: ["pool", "projections", "health", "events"],
   refresh_odds: ["quotes", "props", "games", "health"],
   refresh_stats: ["health"],

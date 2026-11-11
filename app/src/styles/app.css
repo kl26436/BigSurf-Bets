@@ -194,6 +194,7 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
 /* ---- sheet, toast ----------------------------------------------------------- */
 .scrim { position: fixed; inset: 0; z-index: var(--z-sheet); background: var(--component-sheet-backdrop); backdrop-filter: blur(var(--semantic-overlay-blur));
   display: flex; align-items: flex-end; justify-content: center; animation: fade var(--motion-duration-normal) var(--motion-easing-outExpo); }
+.sheet:focus { outline: none; }   /* focus lands on the sheet itself when it opens; its controls show their own ring */
 .sheet { width: 100%; max-width: 640px; max-height: 92dvh; overflow-y: auto; background: var(--component-sheet-surface);
   border-radius: var(--component-sheet-radius) var(--component-sheet-radius) 0 0; padding: var(--space-4) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
   animation: rise var(--motion-duration-slow) var(--motion-easing-outExpo); }

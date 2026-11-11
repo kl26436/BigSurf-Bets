@@ -72,6 +72,11 @@ class NegBin:
         n, p = self._np(mu)
         return stats.nbinom.ppf(q, n, p)
 
+    def to_json(self) -> dict:
+        """What the app needs to price a number itself (see app/src/lib/dist.ts)."""
+        return {"edges": [None if not np.isfinite(e) else round(float(e), 4) for e in self.edges],
+                "alphas": [round(float(x), 5) for x in self.alphas]}
+
 
 @dataclass
 class Empirical:
@@ -125,6 +130,14 @@ class Empirical:
         mu = np.asarray(mu, float)
         b, scale = self._bucket(mu)
         return np.array([s.std() for s in self.samples])[b] * scale
+
+    def to_json(self, n_points: int = 201) -> dict:
+        """Each bucket's outcomes boiled down to evenly spaced quantiles (0 … 1):
+        enough for the app to read P(over) off them to within half a point."""
+        qs = np.linspace(0, 1, n_points)
+        return {"edges": [round(float(e), 4) for e in self.edges],
+                "pred_mean": [round(float(m), 4) for m in self.pred_mean],
+                "quantiles": [[round(float(v), 2) for v in np.quantile(s, qs)] for s in self.samples]}
 
 
 def american_to_prob(odds: float) -> float:

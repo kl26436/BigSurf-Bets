@@ -244,9 +244,31 @@ def write_db(conn, res: Result, git_sha: str | None = None, inputs_hash: str | N
             pl.lit(run_id).alias("run_id"), pl.lit("nfl").alias("sport"),
         )
         log_run.rows = insert_df(conn, "projections", df)
+        save_dists(conn, m, run_id)
         log_run.detail.update(run_id=run_id, season=res.season, week=res.week, ruled_out=res.n_out)
         conn.commit()
         return run_id
+
+
+def save_dists(conn, model: train.Model, run_id: int | None) -> int:
+    """Keep the fitted outcome shapes where the app can read them: one row per
+    stat, replaced on every run (bsb.model_dists). With these and a player's
+    projected mean the app prices any number without a round trip."""
+    import json
+
+    from .dist import NegBin
+
+    n = 0
+    for stat, d in model.dists.items():
+        kind = "nb" if isinstance(d, NegBin) else "emp"
+        conn.execute(
+            """insert into bsb.model_dists (stat, kind, params, run_id) values (%s, %s, %s::jsonb, %s)
+               on conflict (stat) do update set kind = excluded.kind, params = excluded.params,
+                   run_id = excluded.run_id, updated_at = now()""",
+            (stat, kind, json.dumps(d.to_json()), run_id),
+        )
+        n += 1
+    return n
 
 
 def inputs_fingerprint(conn, out_ids: set[str], cleared: set[str], git_sha: str | None = None) -> str:

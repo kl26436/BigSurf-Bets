@@ -15,6 +15,7 @@ from league.guillotine import (
     prize_fractions,
     recommend,
     simulate,
+    slot_labels,
     team_curve,
     weekly_means,
 )
@@ -104,3 +105,30 @@ def test_recommend_targets_the_stud_within_budget_and_never_over_it():
     assert all(r.bid == 0 or r.drop for r in res.recs)
     assert sum(r.bid for r in res.recs if r.group != top.group) + top.bid <= lg.me.budget
     assert res.drops[0][1] <= res.drops[-1][1]             # least valuable first
+
+
+def test_start_sit_needs_and_what_is_coming():
+    assert slot_labels(SLOTS) == ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "FLEX1", "FLEX2"]
+    lg = _league()
+    lg.teams[0].players.append(_p("hurt", "WR", 30, status="Out"))      # the best player on paper, but out
+    res = recommend(lg, n_sim=2000)
+    start = [d for d in res.lineup if d["start"]]
+    assert len(start) == 8 and "hurt" not in {d["name"] for d in start}
+    assert [d["spot"] for d in start if d["pos"] == "QB"] == ["QB"]
+    assert len(res.lineup) == len(lg.me.players)
+    # my roster is 5% under the reference roster: every spot trails the league median or ties it
+    assert res.needs and res.needs[0]["gap"] <= res.needs[-1]["gap"]
+    # the weak team is the likeliest to be chopped, and its odds grow over three weeks
+    assert res.coming[0]["owner"] == "weak" and res.coming[0]["chop_3"] >= res.coming[0]["chop_1"] > 0.3
+    assert all(len(c["players"]) <= 3 for c in res.coming) and {c["owner"] for c in res.coming} == {"rich", "weak", "strong"}
+    assert res.advice["verdict"] in {"now", "wait", "either", "hold"} and res.advice["now"]["name"] == "stud"
+
+
+def test_wait_when_better_players_are_about_to_come_free():
+    lg = _league()
+    lg.free_agents = [_p("meh", "WR", 11.5)]
+    lg.teams[0].players = _roster("m", 1.3)                             # I am in no danger this week
+    lg.teams[2].players = _roster("w", 0.6) + [_p("star", "WR", 30)]    # on the team most likely to go
+    res = recommend(lg, n_sim=2000)
+    assert res.advice["my_chop"] < 0.15 and res.coming[0]["owner"] == "weak"
+    assert res.advice["verdict"] == "wait" and res.advice["later_gain"] > res.advice["now"]["gain"]
