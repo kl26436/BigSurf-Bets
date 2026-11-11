@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from . import data, dst, features, train
+from . import data, dst, features, kicker, train
 from .backtest import PROP_STATS
 from .dist import QUANTILES
 
@@ -46,6 +46,7 @@ class Result:
     model: train.Model
     n_out: int
     dst_model: dst.DSTModel | None = None
+    kicker_model: kicker.KickerModel | None = None
 
 
 def sleeper_statuses(conn, max_age_hours: int = 48) -> tuple[set[str], set[str]]:
@@ -140,6 +141,15 @@ def _tidy_dst(pred: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _tidy_kicker(pred: pl.DataFrame) -> pl.DataFrame:
+    return pred.filter(pl.col("kicker_id").is_not_null()).select(
+        "season", "week", pl.col("kicker_id").alias("player_id"), pl.col("kicker_name").alias("player_name"),
+        pl.lit("K").alias("position"), "team", "opponent", "game_id", "is_home", "implied_total", "spread_team",
+        pl.col("proj_dk").round(2).alias("dk_mean"), pl.col("proj_dk_std").round(2).alias("dk_std"),
+        *[pl.col(f"proj_dk_p{int(q * 100)}").round(2).alias(f"dk_p{int(q * 100)}") for q in QUANTILES],
+    )
+
+
 def _tidy(model: train.Model, pred: pl.DataFrame) -> pl.DataFrame:
     p_td0 = (1 - train.prob_over(model, "rushing_tds", pred["proj_rushing_tds"].to_numpy(), 0.5)) * (
         1 - train.prob_over(model, "receiving_tds", pred["proj_receiving_tds"].to_numpy(), 0.5)
@@ -198,7 +208,17 @@ def run(
     dst_model = dst.fit(dst_df, seasons)
     dst_proj = _tidy_dst(dst.predict(dst_model, dst_df.filter(pl.col("is_future"))))
     log.info("projected %d players + %d DSTs for %s week %s", proj.height, dst_proj.height, season, week)
-    proj = pl.concat([proj, dst_proj], how="diagonal_relaxed").sort("dk_mean", descending=True)
+    # kickers (showdown slates roster them): never let them cost the run that everything else depends on
+    k_model, k_proj = None, None
+    try:
+        k_df = kicker.build(d, upcoming=(season, week), out_ids=out_ids)
+        k_model = kicker.fit(k_df, seasons)
+        k_proj = _tidy_kicker(kicker.predict(k_model, k_df.filter(pl.col("is_future"))))
+        log.info("projected %d kickers", k_proj.height)
+    except Exception as e:  # noqa: BLE001
+        log.warning("kicker projections failed (everything else is unaffected): %s", e)
+    proj = pl.concat([proj, dst_proj, *([k_proj] if k_proj is not None and k_proj.height else [])],
+                     how="diagonal_relaxed").sort("dk_mean", descending=True)
     # mid-week (after Thursday night): only teams that still have their game to play
     still = data.open_teams(d.schedules, season, week)
     if still and proj.filter(pl.col("team").is_in(list(still))).height:
@@ -206,7 +226,7 @@ def run(
         if dropped:
             log.info("%d teams have already played week %s — not re-projected", dropped, week)
         proj = proj.filter(pl.col("team").is_in(list(still)))
-    return Result(season, week, proj, model, len(out_ids or ()), dst_model)
+    return Result(season, week, proj, model, len(out_ids or ()), dst_model, k_model)
 
 
 def save_local(res: Result, out_dir: Path | None = None) -> Path:
@@ -236,7 +256,8 @@ def write_db(conn, res: Result, git_sha: str | None = None, inputs_hash: str | N
             (
                 MODEL_VERSION, res.season, res.week, m.seasons, m.n_rows, len(m.features),
                 res.projections.height, res.n_out,
-                _json({**m.oof_metrics, **({"oof_mae_dst_dk": res.dst_model.oof_mae} if res.dst_model else {})}), git_sha,
+                _json({**m.oof_metrics, **({"oof_mae_dst_dk": res.dst_model.oof_mae} if res.dst_model else {}),
+                       **({"oof_mae_k_dk": res.kicker_model.oof_mae} if res.kicker_model else {})}), git_sha,
                 inputs_hash,
             ),
         ).fetchone()[0]

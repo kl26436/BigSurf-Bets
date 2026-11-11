@@ -46,6 +46,8 @@ jobs:
           stale=(); if [[ "$EVENT" == "workflow_run" ]]; then stale=(--if-stale); fi
           bsb lineups build --mode gpp --n "$N" --max-exposure "$MAX_EXPOSURE" "${stale[@]}"
           bsb lineups build --mode cash --n 3 --max-exposure 0.67 "${stale[@]}"
+          # a single-game (captain) slate, when a salary file for one has been added
+          bsb lineups build --slate-type showdown --mode gpp --n 10 --max-exposure 0.6 --min-unique 2 "${stale[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: lineups

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SLOTS, addPlayer, arrangeForLateSwap, check, emptyLineup, exposure, toDkCsv, value } from "./lineup";
+import { SLOTS, addPlayer, arrangeForLateSwap, check, emptyLineup, exposure, onePerPlayer, toDkCsv, value } from "./lineup";
 import { arbSplit, americanToDecimal, decimalToAmerican, kelly, suggestedStake } from "./stake";
 import type { PoolPlayer, Pos } from "./types";
 
@@ -77,5 +77,24 @@ describe("stakes", () => {
     expect(s.a * 2.1).toBeCloseTo(s.b * 2.05);
     expect(s.profit).toBeGreaterThan(3.7);
     expect(arbSplit(100, 1.91, 1.91).profit).toBeLessThan(0);
+  });
+});
+
+describe("single-game (captain) lineups", () => {
+  it("writes the upload file under the captain header, with DraftKings' own ids", () => {
+    const csv = toDkCsv([["8101-CPT", "7102", "7103", "7104", "7105", "7106"]]);
+    expect(csv).toBe("CPT,FLEX,FLEX,FLEX,FLEX,FLEX\n8101,7102,7103,7104,7105,7106\n");
+    expect(toDkCsv([["1", "2", "3", "4", "5", "6", "7", "8", "9"]]).split("\n")[0]).toBe("QB,RB,RB,WR,WR,WR,TE,FLEX,DST");
+  });
+  it("counts a player's captain row and ordinary row as one player", () => {
+    const row = (lineup_no: number, dk_id: string, player_id: string, slot: string) => ({ lineup_no, dk_id, player_id, slot });
+    const e = exposure([row(1, "81-CPT", "a", "CPT"), row(1, "72", "b", "FLEX"), row(2, "71", "a", "FLEX"), row(2, "82-CPT", "b", "CPT"), row(3, "71", "a", "FLEX")]);
+    expect(e.size).toBe(2);
+    expect(e.get("a")).toMatchObject({ count: 3, captain: 1, share: 1 });
+    expect(e.get("a")!.row.dk_id).toBe("71");               // shown with his ordinary salary, not the captain's
+    expect(e.get("b")).toMatchObject({ count: 2, captain: 1 });
+  });
+  it("keeps one row per player for lists", () => {
+    expect(onePerPlayer([{ dk_id: "71" }, { dk_id: "81-CPT" }, { dk_id: "72" }]).map((p) => p.dk_id)).toEqual(["71", "72"]);
   });
 });

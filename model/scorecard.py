@@ -20,7 +20,7 @@ import logging
 import numpy as np
 import polars as pl
 
-from . import data, dst
+from . import data, dst, kicker
 from .features import POSITIONS, _played_rows, _player_ref
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,10 @@ def actuals(d: data.NFLData, season: int, week: int) -> pl.DataFrame:
     d_ = dst.build(d).filter(wk & ~pl.col("is_future")).select(
         (pl.lit("DST_") + pl.col("team")).alias("player_id"), pl.lit("DST").alias("position"), "team", "dk",
     )
-    return pl.concat([skill, d_], how="diagonal_relaxed")
+    k = kicker.build(d).filter(wk & ~pl.col("is_future") & pl.col("kicker_id").is_not_null()).select(
+        pl.col("kicker_id").alias("player_id"), pl.lit("K").alias("position"), "team", "dk",
+    )
+    return pl.concat([skill, d_, k], how="diagonal_relaxed").unique("player_id", keep="first")
 
 
 def kickoff_projections(conn, season: int, week: int) -> pl.DataFrame:
@@ -82,7 +85,7 @@ def projection_metrics(proj: pl.DataFrame, act: pl.DataFrame, dk_avg: pl.DataFra
     not scored as a zero — sitting a player out is an availability miss, not a
     projection miss."""
     j = proj.join(act.select("player_id", pl.col("dk").alias("actual")), on="player_id", how="left")
-    rel = j.filter((pl.col("dk_mean") >= min_proj) | (pl.col("position") == "DST"))
+    rel = j.filter((pl.col("dk_mean") >= min_proj) | pl.col("position").is_in(["DST", "K"]))
     played = rel.filter(pl.col("actual").is_not_null())
     if dk_avg is not None and dk_avg.height:
         played = played.join(dk_avg, on="player_id", how="left")
@@ -90,8 +93,9 @@ def projection_metrics(proj: pl.DataFrame, act: pl.DataFrame, dk_avg: pl.DataFra
         "n_projected": rel.height, "n_played": played.height, "did_not_play": rel.height - played.height,
         "pre_kickoff_share": round(float(proj["pre_kickoff"].mean()), 3) if proj.height else None, "by_position": {},
     }
-    for pos in [*POSITIONS, "DST", "ALL"]:
-        d = played if pos == "ALL" else played.filter(pl.col("position") == pos)
+    for pos in [*POSITIONS, "DST", "K", "ALL"]:
+        # "ALL" stays skill players + defenses, as in the backtest: kickers are near-random and would dilute it
+        d = played.filter(pl.col("position") != "K") if pos == "ALL" else played.filter(pl.col("position") == pos)
         if d.is_empty():
             continue
         y, p = d["actual"].to_numpy().astype(float), d["dk_mean"].to_numpy().astype(float)
@@ -215,10 +219,12 @@ def run(conn, season: int | None = None, week: int | None = None, offline: bool 
         dk_avg = pl.DataFrame(cur.fetchall(), schema=["player_id", "dk_avg"], orient="row")
         metrics: dict = {"projections": projection_metrics(proj, act, dk_avg)}
 
-        # lineups: a lineup's actual score counts only if all nine players have a result
+        # lineups: a lineup's actual score counts only if every one of its players has a result
+        # (nine in classic, six in showdown, where the captain's points count 1.5x)
         conn.execute(
             """update bsb.lineups l set actual_points = x.pts
-               from (select lp.set_id, lp.lineup_no, sum(r.dk) as pts, count(r.dk) as n
+               from (select lp.set_id, lp.lineup_no, sum(r.dk * case when lp.slot = 'CPT' then 1.5 else 1 end) as pts,
+                            count(r.dk) as n, count(*) as spots
                      from bsb.lineup_players lp
                      join bsb.lineup_sets ls on ls.id = lp.set_id
                      join bsb.dfs_slates sl on sl.id = ls.slate_id
@@ -226,14 +232,14 @@ def run(conn, season: int | None = None, week: int | None = None, offline: bool 
                           and r.week = sl.week and r.player_id = lp.player_id
                      where sl.season = %s and sl.week = %s
                      group by 1, 2) x
-               where l.set_id = x.set_id and l.lineup_no = x.lineup_no and x.n = 9""",
+               where l.set_id = x.set_id and l.lineup_no = x.lineup_no and x.n = x.spots and x.spots >= 6""",
             (season, week),
         )
         lu = graded_lineups(conn, season, week)
         metrics["lineups"] = lineup_metrics(lu) if lu.height else []
 
         # props: write the settled stat onto every price for the week, then grade the last pre-game pricing
-        long = act.filter(pl.col("position") != "DST").unpivot(
+        long = act.filter(pl.col("position").is_in(POSITIONS)).unpivot(
             [*PROP_STATS, "anytime_td"], index="player_id", variable_name="stat", value_name="actual"
         ).filter(pl.col("actual").is_not_null())
         conn.execute("create temp table _actual (player_id text, stat text, actual numeric) on commit drop")

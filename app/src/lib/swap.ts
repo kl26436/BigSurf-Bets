@@ -111,6 +111,8 @@ export function applySwap(players: LineupPlayer[], plan: SwapPlan): string[] {
 /** "Mahomes + Kelce, Rice · vs Hill": the quarterback, who he is paired with, and who comes back from the other side. */
 export function stackOf(players: { name: string; pos: string; team: string | null; opponent: string | null }[]): string {
   const last = (n: string) => n.replace(/\s+(Jr\.?|Sr\.?|II|III|IV)$/i, "").split(" ").slice(-1)[0];
+  const captain = (players as { slot?: string; name: string }[]).find((p) => p.slot === "CPT");
+  if (captain) return `Captain ${last(captain.name)}`;       // a single-game lineup: the captain is what tells two apart
   const qb = players.find((p) => p.pos === "QB");
   if (!qb) return "";
   const mates = players.filter((p) => p !== qb && p.team === qb.team && p.pos !== "DST");

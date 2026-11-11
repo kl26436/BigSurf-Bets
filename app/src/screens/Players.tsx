@@ -3,13 +3,14 @@ import { GamesPicker } from "../components/GamesPicker";
 import { Empty, ErrorNote, Facts, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
-import { POS_LABEL, addPlayer, value, type Lineup } from "../lib/lineup";
+import { POS_LABEL, addPlayer, isShowdown, onePerPlayer, value, type Lineup } from "../lib/lineup";
 import { useSheet, useTitle, useWide } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore, type PlayerSort } from "../lib/store";
 import type { PoolPlayer, Pos } from "../lib/types";
 
 const POSITIONS: (Pos | "ALL")[] = ["ALL", "QB", "RB", "WR", "TE", "DST"];
+const POSITIONS_ONE_GAME: (Pos | "ALL")[] = [...POSITIONS, "K"];
 const SORTS: Record<PlayerSort, string> = { points: "Expected points", value: "Points per $1,000", salary: "Price" };
 type Sort = PlayerSort;
 /** One id for a row whether or not DraftKings games are loaded. */
@@ -33,7 +34,7 @@ export function Players() {
   const source = slate ? pool : all;
   const rows = useMemo(() => {
     const needle = text.trim().toLowerCase();
-    const playable = (source.data ?? []).filter((p) => p.dk_mean != null)
+    const playable = onePerPlayer(source.data ?? []).filter((p) => p.dk_mean != null)
       .filter((p) => (pos === "ALL" || p.pos === pos) && (!needle || p.name.toLowerCase().includes(needle) || p.team.toLowerCase() === needle));
     return sortPlayers(playable, slate ? sort : "points");
   }, [source.data, pos, sort, text, slate]);
@@ -47,13 +48,13 @@ export function Players() {
   return (
     <div className="stack stack--tight">
       <div>
-        <p className="eyebrow">{slate ? `DraftKings · ${slate.n_games} games` : "All games this week"}</p>
+        <p className="eyebrow">{slate ? (isShowdown(slate) ? "DraftKings · one game, captain format" : `DraftKings · ${slate.n_games} games`) : "All games this week"}</p>
         <h1 className="title">Players</h1>
         <GamesPicker />
       </div>
       <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setPlayersView({ text: e.target.value })} />
       <div className="chips" role="group" aria-label="Position">
-        {POSITIONS.map((p) => (
+        {(isShowdown(slate) ? POSITIONS_ONE_GAME : POSITIONS).map((p) => (
           <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPlayersView({ pos: p })}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
         ))}
       </div>
@@ -123,7 +124,7 @@ export function Players() {
           ))}
         </div>
       )}
-      {open && <PlayerSheet p={open} week={slate ? { season: slate.season, week: slate.week } : null} max={max} onClose={closePlayer} />}
+      {open && <PlayerSheet p={open} week={slate ? { season: slate.season, week: slate.week } : null} max={max} single={isShowdown(slate)} onClose={closePlayer} />}
     </div>
   );
 }
@@ -142,7 +143,7 @@ const LINE: [string, string][] = [
   ["dst_sacks", "Sacks"], ["dst_interceptions", "Interceptions"], ["dst_points_allowed", "Points allowed"],
 ];
 
-function PlayerSheet({ p, week, max, onClose }: { p: PoolPlayer; week: { season: number; week: number } | null; max: number; onClose: () => void }) {
+function PlayerSheet({ p, week, max, single, onClose }: { p: PoolPlayer; week: { season: number; week: number } | null; max: number; single?: boolean; onClose: () => void }) {
   const log = usePlayerLog(p.player_id);
   const override = useSetOverride();
   const { marks, setMark, say, hand, setHand } = useStore();
@@ -214,7 +215,7 @@ function PlayerSheet({ p, week, max, onClose }: { p: PoolPlayer; week: { season:
             <div className="inline">
               <button className={`btn btn--sm ${mark === "lock" ? "btn--primary" : ""}`} onClick={() => setMark(p.dk_id, mark === "lock" ? null : "lock")}>{mark === "lock" ? "In every lineup" : "Put in every lineup"}</button>
               <button className={`btn btn--sm ${mark === "exclude" ? "btn--danger" : ""}`} onClick={() => setMark(p.dk_id, mark === "exclude" ? null : "exclude")}>{mark === "exclude" ? "Left out" : "Leave out"}</button>
-              <button className="btn btn--sm" onClick={addToLineup}>Add to my lineup</button>
+              {!single && <button className="btn btn--sm" onClick={addToLineup}>Add to my lineup</button>}
             </div>
           </div>
         )}

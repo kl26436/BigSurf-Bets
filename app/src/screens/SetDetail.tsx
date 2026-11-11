@@ -5,7 +5,7 @@ import {
   useArchiveSet, useDeleteLineup, useDeleteSet, usePool, useRenameSet, useRequestJob, useSet, useSetEntered, useSetLineupsEntered, useSets,
 } from "../lib/api";
 import { ago, pct, pts, usd } from "../lib/format";
-import { SLOT_LABEL, describeSettings, exposure, rebuildPayload, toDkCsv, type Slot } from "../lib/lineup";
+import { POS_LABEL, SLOT_LABEL, describeSettings, exposure, rebuildPayload, toDkCsv, type Slot } from "../lib/lineup";
 import { useGoUp, useSheet, useTitle, useWide } from "../lib/nav";
 import { useStore } from "../lib/store";
 import { isOut, stackOf } from "../lib/swap";
@@ -55,6 +55,7 @@ export function SetDetail() {
   const poolById = useMemo(() => new Map((pool.data ?? []).map((p) => [p.dk_id, p])), [pool.data]);
   // who is ruled out now (the tag stored with a lineup is from the day it was built)
   const outNow = (p: LineupPlayer) => poolById.size > 0 && isOut(poolById.get(p.dk_id));
+  const single = players.some((p) => p.slot === "CPT");        // a single-game (captain) set
   const enteredNos = useMemo(() => new Set(lineups.filter((l) => l.entered).map((l) => l.lineup_no)), [lineups]);
   const inScope = scope === "entered" && enteredNos.size > 0 ? players.filter((p) => enteredNos.has(p.lineup_no)) : players;
   const shares = useMemo(() => [...exposure(inScope).values()].sort((a, b) => b.count - a.count || (b.row.dk_mean ?? 0) - (a.row.dk_mean ?? 0)), [inScope]);
@@ -167,7 +168,8 @@ export function SetDetail() {
         <div className="card card--pad" role="alert">
           <p className="strong bad">{hurt.length === 1 ? "One lineup has" : `${hurt.length} lineups have`} a player who is ruled out</p>
           <p className="small">{[...new Set(hurt.flatMap((l) => (byLineup.get(l.lineup_no) ?? []).filter(outNow).map((p) => p.name)))].join(", ")}. {enteredNos.size > 0 ? "Entered lineups only." : ""}</p>
-          <Link className="btn btn--sm btn--primary" to={`/lineups/swap?set=${id}`}>Swap them out</Link>
+          {single ? <p className="small muted">Swaps for single-game lineups aren't built yet: change these on DraftKings.</p>
+            : <Link className="btn btn--sm btn--primary" to={`/lineups/swap?set=${id}`}>Swap them out</Link>}
         </div>
       )}
 
@@ -208,7 +210,7 @@ export function SetDetail() {
                 </button>
                 {isOpen && mine.map((p) => (
                   <div className="prow prow--tight" key={p.slot_no}>
-                    <span className="tag">{SLOT_LABEL[p.slot as Slot] ?? p.slot}</span>
+                    <span className="tag">{p.slot === "CPT" ? "CPT" : single ? POS_LABEL[p.pos] ?? p.pos : SLOT_LABEL[p.slot as Slot] ?? p.slot}</span>
                     <div className="grow"><PlayerName name={p.name} status={outNow(p) ? "OUT" : poolById.get(p.dk_id)?.dk_status ?? p.status} /><p className="pmeta">{p.team} vs {p.opponent}</p></div>
                     <p className="pnum num">{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
                   </div>
@@ -234,7 +236,7 @@ export function SetDetail() {
           {shares.map((e) => (
             <div className="prow prow--tight" key={e.row.dk_id}>
               <PosTag pos={e.row.pos} />
-              <div className="grow"><PlayerName name={e.row.name} status={outNow(e.row) ? "OUT" : poolById.get(e.row.dk_id)?.dk_status ?? e.row.status} /><p className="pmeta">{e.row.team} · {usd(e.row.salary)}</p></div>
+              <div className="grow"><PlayerName name={e.row.name} status={outNow(e.row) ? "OUT" : poolById.get(e.row.dk_id)?.dk_status ?? e.row.status} /><Facts className="pmeta" items={[e.row.team, usd(e.row.salary), e.captain > 0 ? `captain in ${e.captain}` : null]} /></div>
               <p className="pnum num">{pct(e.share)}<small>{e.count} of {scope === "entered" && enteredNos.size > 0 ? enteredNos.size : lineups.length}</small></p>
             </div>
           ))}

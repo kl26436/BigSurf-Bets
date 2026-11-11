@@ -6,7 +6,17 @@ export type Slot = (typeof SLOTS)[number];
 export type Lineup = (PoolPlayer | null)[];
 
 export const SLOT_LABEL: Record<Slot, string> = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", FLEX: "Any", DST: "DEF" };
-export const POS_LABEL: Record<Pos, string> = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", DST: "DEF" };
+export const POS_LABEL: Record<Pos, string> = { QB: "QB", RB: "RB", WR: "WR", TE: "TE", DST: "DEF", K: "K" };
+
+// ---- single-game (captain) contests ---------------------------------------------
+// DraftKings lists every player twice for these: an ordinary row, and a captain row
+// with its own id and 1.5x the salary. The salary import tags the captain row's id.
+export const SHOWDOWN_SLOTS = ["CPT", "FLEX", "FLEX", "FLEX", "FLEX", "FLEX"] as const;
+export const CAPTAIN_SUFFIX = "-CPT";
+export const isCaptainRow = (p: { dk_id: string }) => p.dk_id.endsWith(CAPTAIN_SUFFIX);
+export const isShowdown = (s: { slate_type: string } | null | undefined) => s?.slate_type === "showdown";
+/** One row per player: the ordinary rows. (A classic pool has no captain rows and comes back as it is.) */
+export const onePerPlayer = <T extends { dk_id: string }>(pool: T[]): T[] => pool.filter((p) => !isCaptainRow(p));
 
 export function emptyLineup(): Lineup {
   return SLOTS.map(() => null);
@@ -96,19 +106,27 @@ export function arrangeForLateSwap(lineup: Lineup): Lineup {
   return next;
 }
 
-/** DraftKings bulk-upload file: one lineup per row, player ids in slot order. */
+/** DraftKings bulk-upload file: one lineup per row, player ids in slot order.
+ *  Six ids to a lineup is a single-game contest: captain first, under that format's header. */
 export function toDkCsv(lineups: string[][]): string {
-  return [SLOTS.join(","), ...lineups.map((ids) => ids.join(","))].join("\n") + "\n";
+  const header = lineups.length > 0 && lineups.every((ids) => ids.length === SHOWDOWN_SLOTS.length) ? SHOWDOWN_SLOTS : SLOTS;
+  return [header.join(","), ...lineups.map((ids) => ids.map((id) => (id.endsWith(CAPTAIN_SUFFIX) ? id.slice(0, -CAPTAIN_SUFFIX.length) : id)).join(","))].join("\n") + "\n";
 }
 
-export function exposure<T extends { dk_id: string; lineup_no: number }>(rows: T[]): Map<string, { row: T; count: number; share: number }> {
+/** How many lineups each player is in. In a single-game set a player's captain row and
+ *  ordinary row are the same player: counted together (`captain` says how often as captain),
+ *  and the row kept for display is the ordinary one. */
+export function exposure<T extends { dk_id: string; lineup_no: number; player_id?: string | null; slot?: string }>(rows: T[]): Map<string, { row: T; count: number; share: number; captain: number }> {
   const total = new Set(rows.map((r) => r.lineup_no)).size || 1;
-  const out = new Map<string, { row: T; count: number; share: number }>();
+  const single = rows.some((r) => r.slot === "CPT");
+  const out = new Map<string, { row: T; count: number; share: number; captain: number }>();
   for (const r of rows) {
-    const e = out.get(r.dk_id) ?? { row: r, count: 0, share: 0 };
+    const key = single ? r.player_id ?? r.dk_id.replace(CAPTAIN_SUFFIX, "") : r.dk_id;
+    const e = out.get(key) ?? { row: r, count: 0, share: 0, captain: 0 };
+    if (r.slot === "CPT") e.captain += 1; else if (e.row.slot === "CPT") e.row = r;
     e.count += 1;
     e.share = e.count / total;
-    out.set(r.dk_id, e);
+    out.set(key, e);
   }
   return out;
 }

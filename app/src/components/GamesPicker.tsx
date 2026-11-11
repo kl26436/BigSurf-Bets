@@ -2,7 +2,9 @@ import { dayName } from "../lib/format";
 import { useCurrentSlate } from "../lib/slate";
 import type { Slate } from "../lib/types";
 
-const label = (s: Slate) => `Week ${s.week} · ${dayName(s.starts_at) || "Upcoming"} games${s.n_games ? ` · ${s.n_games}` : ""}${s.upcoming ? "" : " · played"}`;
+const label = (s: Slate) => (s.slate_type === "showdown"
+  ? `Week ${s.week} · ${dayName(s.starts_at) || "Upcoming"} · one game, captain format${s.upcoming ? "" : " · played"}`
+  : `Week ${s.week} · ${dayName(s.starts_at) || "Upcoming"} games${s.n_games ? ` · ${s.n_games}` : ""}${s.upcoming ? "" : " · played"}`);
 
 /** Which DraftKings games the screen is about. Only shown when there is more than one set of games to choose from. */
 export function GamesPicker() {

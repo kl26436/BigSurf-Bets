@@ -27,7 +27,8 @@ def quantile_knots(pool: pl.DataFrame) -> np.ndarray:
     the skew), within sane limits."""
     q = pool.select("dk_p10", "dk_p25", "dk_p50", "dk_p75", "dk_p90").to_numpy().astype(float)
     mean = pool["dk_mean"].to_numpy().astype(float)
-    floor = np.where(pool["pos"].to_numpy() == "DST", -4.0, -2.0)
+    pos = pool["pos"].to_numpy()
+    floor = np.where(pos == "DST", -4.0, np.where(pos == "K", 0.0, -2.0))
     lo = np.maximum(q[:, 0] - (q[:, 1] - q[:, 0]), floor)
     lo = np.minimum(lo, q[:, 0])
     w = np.diff(KNOTS)
@@ -46,7 +47,8 @@ def simulate(pool: pl.DataFrame, corr: dict | None = None, n_sims: int = 10_000,
     L = np.linalg.cholesky(corr_mod.game_matrix(corr))
     rng = np.random.default_rng(seed)
     p = corr_mod.assign_roles(pool, ["team"], "dk_mean")
-    role = [r if r is not None else DEPTH_ROLE[pos] for r, pos in zip(p["role"], p["pos"], strict=True)]
+    # a kicker has no role in the correlation model: he is drawn on his own
+    role = [r if r is not None else DEPTH_ROLE.get(pos) for r, pos in zip(p["role"], p["pos"], strict=True)]
     primary = p["role"].is_not_null().to_numpy()
     team, game = p["team"].to_numpy(), p["game"].to_numpy()
     latent = np.empty((n_sims, pool.height))
@@ -55,6 +57,9 @@ def simulate(pool: pl.DataFrame, corr: dict | None = None, n_sims: int = 10_000,
         teams = sorted(set(team[idx]))
         z = rng.standard_normal((n_sims, 2 * len(roles))) @ L.T   # role factors for both teams
         for i in idx:
+            if role[i] is None:
+                latent[:, i] = rng.standard_normal(n_sims)
+                continue
             col = roles.index(role[i]) + (len(roles) if team[i] == teams[-1] and len(teams) > 1 else 0)
             a = 1.0 if primary[i] else DEPTH_LOADING
             latent[:, i] = a * z[:, col] + np.sqrt(1 - a * a) * rng.standard_normal(n_sims)
