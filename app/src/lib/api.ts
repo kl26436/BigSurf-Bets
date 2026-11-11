@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import * as demo from "./demo";
 import {
-  DEFAULT_SETTINGS, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun,
 } from "./types";
@@ -28,7 +28,7 @@ function num<T>(rows: T[]): T[] {
   return rows;
 }
 
-const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name"]);
+const TEXT = new Set(["dk_id", "name", "label", "slate_name", "note", "error", "override_note", "contest_name", "description"]);
 
 /** Every row of a view (paged past the API's 1,000-row page), or just the first `max`. */
 async function all<T>(view: string, build: (q: any) => any = (q) => q, max?: number): Promise<T[]> {
@@ -108,6 +108,8 @@ export const useQuotes = () =>
   useQuery({ queryKey: ["quotes"], staleTime: MIN, queryFn: () => (DEMO ? demo.quotes : all<LineQuote>("app_line_quotes")) });
 export const usePropEdges = () =>
   useQuery({ queryKey: ["props"], staleTime: MIN, queryFn: () => (DEMO ? demo.props : all<PropEdge>("app_prop_edges")) });
+export const useBets = () =>
+  useQuery({ queryKey: ["bets"], queryFn: () => (DEMO ? demo.listBets() : all<Bet>("app_bets", (q) => q.order("placed_at", { ascending: false }))) });
 export const useScorecards = () =>
   useQuery({ queryKey: ["scorecards"], queryFn: () => (DEMO ? demo.scorecards : all<Scorecard>("app_scorecards", (q) => q.order("season", { ascending: false }).order("week", { ascending: false }))) });
 export const useRoster = () =>
@@ -168,6 +170,16 @@ export const useImportEntries = () =>
 export const useAssignEntries = () =>
   useWrite((a: { assignments: { entry_id: string; set_id: number | null; lineup_no?: number | null }[] }) =>
     DEMO ? demo.assignEntries(a.assignments) : rpc<number>("bsb_assign_entries", { p_assignments: a.assignments }), ["entries", "sets", "set"]);
+/** Write a placed bet down → its id */
+export const useLogBet = () =>
+  useWrite((a: { bet: Record<string, unknown> }) => (DEMO ? demo.logBet(a.bet) : rpc<number>("bsb_log_bet", { p: a.bet })), ["bets"]);
+export const useSettleBet = () =>
+  useWrite((a: { id: number; result: Bet["result"] }) => (DEMO ? demo.settleBet(a.id, a.result) : rpc("bsb_settle_bet", { p_id: a.id, p_result: a.result })), ["bets"]);
+export const useDeleteBet = () =>
+  useWrite((a: { id: number }) => (DEMO ? demo.deleteBet(a.id) : rpc("bsb_delete_bet", { p_id: a.id })), ["bets"]);
+/** Settle open bets from final scores → how many were settled */
+export const useGradeBets = () =>
+  useWrite((_: void) => (DEMO ? demo.gradeBets() : rpc<number>("bsb_grade_bets")), ["bets"]);
 export const useRenameSet = () =>
   useWrite((a: { set_id: number; label: string | null }) =>
     DEMO ? demo.renameSet(a.set_id, a.label) : rpc("bsb_rename_set", { p_set_id: a.set_id, p_label: a.label }), ["sets", "set"]);

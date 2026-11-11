@@ -254,6 +254,9 @@ def run(conn, season: int | None = None, week: int | None = None, offline: bool 
             "player_id", "stat", "line", "bookmaker", "over_decimal", "under_decimal", "novig_over", "model_over", "actual"])
         metrics["props"] = props_mod.grade(pp) if pp.height else {"n": 0}
 
+        # recorded bets: settle what the final scores and stat lines now decide
+        metrics["bets_graded"] = conn.execute("select bsb.grade_bets()").fetchone()[0]
+
         conn.execute(
             """insert into bsb.scorecards (sport, season, week, metrics) values ('nfl', %s, %s, %s::jsonb)
                on conflict (sport, season, week) do update set metrics = excluded.metrics, created_at = now()""",

@@ -231,7 +231,8 @@ button.spread { width: 100%; min-height: var(--size-tapMin); }
 .sticky-cta__note { padding-bottom: var(--space-2); text-align: center; }
 
 /* ---- lineup sets: a grid of lineups, each a small card ------------------------ */
-.lgrid { display: grid; gap: var(--space-layout-itemGap); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
+.lgrid { display: grid; gap: var(--space-layout-itemGap); grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); align-items: start; }
+.lgrid--wide { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 .lcard { border: 1px solid transparent; }
 .lcard--on { border-color: var(--semantic-accent-border); background: var(--semantic-bg-cardHi); }
 .lcard__nums { display: flex; flex-direction: column; gap: var(--space-0-5); width: 100%; padding: var(--space-1) 0 var(--space-2); }
@@ -247,3 +248,45 @@ button.spread { width: 100%; min-height: var(--size-tapMin); }
 .input[type="file"] { padding: var(--space-2); color: var(--semantic-text-muted); font-size: var(--typography-size-sm); }
 .input[type="file"]::file-selector-button { margin-right: var(--space-3); min-height: var(--size-tapSm); padding: 0 var(--space-3); border: 0; border-radius: var(--component-chip-radius);
   background: var(--semantic-bg-cardHi); color: var(--semantic-text-main); font: inherit; font-weight: var(--typography-weight-semibold); cursor: pointer; }
+
+/* price board: a market's two sides as a pair of tappable prices */
+.chips--sub { margin-top: var(--space-2); }
+.rowline--tap { width: 100%; text-align: left; }
+.board + .board { margin-top: var(--space-3); }
+.board > .eyebrow { margin-bottom: var(--space-1); }
+.board__sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.board__side { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-2); align-items: baseline; min-height: var(--size-tapMin); padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-s); background: var(--semantic-bg-cardHi); text-align: left; }
+.board__side > .small { grid-column: 1 / -1; }
+.board__side:disabled { opacity: 0.45; cursor: default; }
+.board__price { font-weight: var(--typography-weight-semibold); color: var(--semantic-accent-default); }
+.board--line { padding: var(--space-3) 0; border-bottom: 1px solid var(--semantic-border-soft); }
+.board--line:last-child { border-bottom: 0; }
+.board--line > .board__sides { margin-top: var(--space-2); }
+
+/* the week as a checklist */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.steps { list-style: none; margin: 0; padding: 0; }
+.step { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-tapMin); padding: var(--space-2) 0; border-bottom: 1px solid var(--semantic-border-soft); }
+.step:last-child { border-bottom: 0; }
+.step > .grow { flex: 1; min-width: 0; }
+.step__mark { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius-pill); border: 2px solid var(--semantic-border-soft); color: var(--semantic-text-muted); }
+.step__mark svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.step--done .step__mark { border-color: var(--semantic-status-success); color: var(--semantic-status-success); }
+.step--alert .step__mark { border-color: var(--semantic-status-danger); color: var(--semantic-status-danger); }
+.step--alert .strong { color: var(--semantic-status-danger); }
+.step--todo[aria-current="step"] .step__mark { border-color: var(--semantic-accent-default); }
+.step--later .strong { color: var(--semantic-text-muted); }
+
+/* laptop: the players as a table, and the builder with its picker alongside */
+.ptable th.left, .ptable td.left { text-align: left; }
+.ptable td { vertical-align: middle; white-space: nowrap; }
+.ptable tbody tr { cursor: pointer; }
+.ptable tbody tr:hover { background: var(--semantic-bg-cardHi); }
+.ptable .rangecell { display: block; min-width: 140px; }
+.thbtn { font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.thbtn[aria-pressed="true"] { color: var(--semantic-accent-default); }
+.namebtn { display: block; min-width: 0; text-align: left; }
+.panes { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: var(--space-layout-sectionGap); align-items: start; }
+.pane { position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-8)); overflow-y: auto; }
+.prow--focus { background: var(--semantic-bg-cardHi); }

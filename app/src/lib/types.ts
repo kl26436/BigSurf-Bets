@@ -175,6 +175,35 @@ export interface PropEdge {
   captured_at: string | null;
 }
 
+/** A bet that was placed, as written down in the app. */
+export interface Bet {
+  id: number;
+  created_at: string;
+  placed_at: string;
+  bookmaker: string;
+  kind: "game" | "player" | "other";
+  description: string;
+  game_id: string | null;
+  market: string | null;
+  number: number | null;
+  outcome: "home" | "away" | "over" | "under" | null;
+  player_id: string | null;
+  price_decimal: number;
+  stake: number;
+  fair_prob: number | null;          // true chance when it was placed
+  result: "open" | "won" | "lost" | "void";
+  settled_at: string | null;
+  graded_by: string | null;          // "score": settled from the final score
+  note: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  kickoff_at: string | null;
+  returned: number | null;
+  profit: number | null;
+  closing_fair: number | null;       // the sharp book's fair chance at kickoff
+  beat_close: number | null;         // price taken × closing chance − 1
+}
+
 export interface Job {
   id: number;
   created_at: string;
