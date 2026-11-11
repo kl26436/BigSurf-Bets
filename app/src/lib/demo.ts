@@ -70,6 +70,32 @@ for (const g of games) {
 }
 slates[0].n_players = pool.length;
 
+// ---- a single-game (captain) contest: the late game, every player twice, a kicker a side ----
+export const ONE_GAME = 5;
+const late = games[games.length - 1];
+export const onePool: PoolPlayer[] = [];
+for (const p of pool.filter((x) => x.game_id === late.game_id)) {
+  const own = { ...p, slate_id: ONE_GAME, dk_id: `7${p.dk_id}` };
+  onePool.push(own, { ...own, dk_id: `8${p.dk_id}-CPT`, salary: Math.round((p.salary * 1.5) / 100) * 100 });
+}
+[late.home_team, late.away_team].forEach((team, i) => {
+  const k = { ...onePool[0], dk_id: `7900${i}`, player_id: `demo-k${i}`, name: `${FIRST[i + 3]} ${LAST[i + 9]}`, pos: "K" as Pos, team,
+    opponent: i === 0 ? late.away_team : late.home_team, salary: 4000 + i * 200, dk_mean: 8.6 - i * 0.4, model_dk_mean: 8.6 - i * 0.4, dk_status: null, injury_status: null,
+    dk_p10: 3, dk_p25: 5, dk_p50: 8, dk_p75: 11, dk_p90: 15, ppr_mean: null, anytime_td_prob: null, avg_points: 8.1 };
+  onePool.push(k, { ...k, dk_id: `8900${i}-CPT`, salary: (4000 + i * 200) * 1.5 });
+});
+slates.unshift({ id: ONE_GAME, slate_name: "sample late game", slate_type: "showdown", season: 2026, week: 10, starts_at: late.kickoff_at, salary_cap: 50000,
+  imported_at: hoursAgo(19), upcoming: true, n_players: onePool.length, n_games: 1 });
+/** Six for the late game: a captain (his captain row) and five more, a different captain each time. */
+function oneGameLineup(k: number): { p: PoolPlayer; slot: string }[] {
+  const own = onePool.filter((p) => !p.dk_id.endsWith("-CPT") && p.dk_mean != null).sort((a, b) => (b.dk_mean ?? 0) - (a.dk_mean ?? 0));
+  const cap = own[k % 5];
+  const rest = own.filter((p) => p !== cap).filter((_, i) => (i + k) % 3 !== 2).slice(0, 4);
+  const kicker = own.find((p) => p.pos === "K" && p !== cap)!;
+  const capRow = onePool.find((p) => p.dk_id.endsWith("-CPT") && p.player_id === cap.player_id)!;
+  return [{ p: { ...capRow, dk_mean: (cap.dk_mean ?? 0) * 1.5 }, slot: "CPT" }, ...[...rest, kicker].map((p) => ({ p, slot: "FLEX" }))];
+}
+
 export const whoami = { signed_in: true, member: true, role: "owner", claim_open: false };
 export const health: FeedHealth[] = [
   ["nflverse.player_stats", "Game stats", 26, 100, "ok"], ["nflverse.injuries", "Injury reports", 26, 100, "ok"],
@@ -87,8 +113,12 @@ function buildLineup(k: number): PoolPlayer[] {
   const l = [qb, pick("RB", 0), pick("RB", 1), pick("WR", 0), pick("WR", 1), pick("WR", 2), pick("TE", 0), pick("RB", 2), pick("DST", 0)];
   return l;
 }
-const setPlayers = (setId: number, n: number): LineupPlayer[] =>
-  Array.from({ length: n }, (_, k) => buildLineup(k + setId).map((p, i) => ({
+const setPlayers = (setId: number, n: number, slateId = 1): LineupPlayer[] => slateId === ONE_GAME
+  ? Array.from({ length: n }, (_, k) => oneGameLineup(k + setId).map(({ p, slot }, i) => ({
+    set_id: setId, lineup_no: k + 1, slot_no: i, slot, dk_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos,
+    team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status,
+  }))).flat()
+  : Array.from({ length: n }, (_, k) => buildLineup(k + setId).map((p, i) => ({
     set_id: setId, lineup_no: k + 1, slot_no: i, slot: SLOTS[i], dk_id: p.dk_id, player_id: p.player_id, name: p.name, pos: p.pos,
     team: p.team, opponent: p.opponent, salary: p.salary, dk_mean: p.dk_mean, status: p.dk_status,
   }))).flat();
@@ -104,7 +134,10 @@ export let sets: LineupSet[] = [
     settings: { n: 10, mode: "gpp", max_exposure: 0.4, min_unique: 3, rules: { qb_stack: 1, bring_back: 1, lock: ["40001"], exclude: [] } },
     summary: { players_used: 31, max_exposure_pct: 40, avg_proj: 131.2 }, on_latest_projections: false, archived_at: null },
 ];
-let nextSetId = 4;
+sets.push({ id: 4, created_at: hoursAgo(1.8), slate_id: ONE_GAME, run_id: 9, mode: "gpp", source: "auto", entered: false, label: null, job_id: null, n_lineups: 10,
+  settings: { n: 10, mode: "gpp", max_exposure: 0.6, min_unique: 2, rules: { qb_stack: 0, bring_back: 0, lock: [], exclude: [] } },
+  summary: { players_used: 14, max_exposure_pct: 60, avg_proj: 96.4 }, on_latest_projections: true, archived_at: null });
+let nextSetId = 6;
 /** The sample app has one scratch: a back in the entered set is ruled out after it was built. */
 function scratchOne() {
   const d = detailOf(sets[2]);
@@ -113,7 +146,7 @@ function scratchOne() {
   if (victim) Object.assign(victim, { dk_status: "OUT", injury_status: "Out", dk_mean: null, model_dk_mean: null });
 }
 export const listSets = (slateId = 1) => Promise.resolve(sets.filter((s) => s.slate_id === slateId));
-export const poolFor = (slateId: number) => Promise.resolve(slateId === 1 ? pool.slice() : []);
+export const poolFor = (slateId: number) => Promise.resolve(slateId === 1 ? pool.slice() : slateId === ONE_GAME ? onePool.slice() : []);
 const change = (id: number, patch: Partial<LineupSet>) => { sets = sets.map((s) => (s.id === id ? { ...s, ...patch } : s)); };
 
 type Detail = { lineups: LineupRow[]; players: LineupPlayer[] };
@@ -130,7 +163,7 @@ function rows(setId: number, players: LineupPlayer[], n: number): LineupRow[] {
 function detailOf(s: LineupSet): Detail {
   let d = details.get(s.id);
   if (!d) {
-    const players = setPlayers(s.id, s.n_lineups);
+    const players = setPlayers(s.id, s.n_lineups, s.slate_id);
     d = { lineups: rows(s.id, players, s.n_lineups).map((l) => ({ ...l, entered: s.entered })), players };
     details.set(s.id, d);
   }
@@ -255,7 +288,7 @@ function sampleBuild(payload: Record<string, unknown>, jobId: number): number {
   const id = nextSetId++;
   const n = Math.max(1, Math.min(150, Number(payload.n ?? 20)));
   const mode = payload.mode === "cash" ? "cash" : "gpp";
-  const fresh: LineupSet = { id, created_at: new Date().toISOString(), slate_id: 1, run_id: 9, mode, source: "user", entered: false,
+  const fresh: LineupSet = { id, created_at: new Date().toISOString(), slate_id: payload.slate_id === ONE_GAME ? ONE_GAME : 1, run_id: 9, mode, source: "user", entered: false,
     label: (payload.label as string | undefined) ?? null, job_id: jobId, n_lineups: n,
     settings: { n, mode, max_exposure: payload.max_exposure, min_unique: payload.min_unique,
       rules: { qb_stack: payload.qb_stack, bring_back: payload.bring_back, lock: payload.lock ?? [], exclude: payload.exclude ?? [] } },

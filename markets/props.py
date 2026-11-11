@@ -203,7 +203,7 @@ def write_db(conn, props: pl.DataFrame, run_id: int, season: int, week: int) -> 
 
 def build(conn, model: train.Model, projections: pl.DataFrame, run_id: int, season: int, week: int) -> int:
     """Price every current prop for this week's projected players → bsb.prop_prices."""
-    skill = projections.filter(pl.col("position") != "DST")
+    skill = projections.filter(pl.col("position").is_in(["QB", "RB", "WR", "TE"]))
     games = skill["game_id"].drop_nulls().unique().to_list()
     rows = latest_rows(conn, games)
     props = add_model(tidy(rows, skill.select("player_id", "player_name", "team", "game_id")), model, skill)

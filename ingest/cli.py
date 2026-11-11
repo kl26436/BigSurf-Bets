@@ -432,14 +432,15 @@ def lineups_build(
     min_unique: int = typer.Option(3, help="players by which any two lineups must differ"),
     lock: str = typer.Option(None, help="comma-separated names (or DK ids) that must be in every lineup"),
     exclude: str = typer.Option(None, help="comma-separated names (or DK ids) to leave out"),
-    slate_id: int = typer.Option(None, help="bsb.dfs_slates id (default: newest upcoming classic slate)"),
+    slate_id: int = typer.Option(None, help="bsb.dfs_slates id (default: newest upcoming slate of --slate-type)"),
+    slate_type: str = typer.Option("classic", help="classic, or showdown (single game, captain)"),
     csv: str = typer.Option(None, help="local mode: a DKSalaries.csv export instead of Supabase"),
     projections: str = typer.Option(None, help="local mode: projections parquet from `bsb model project`"),
     write: bool = typer.Option(True, help="save the set to Supabase (ignored in local mode)"),
     seed: int = typer.Option(7),
     if_stale: bool = typer.Option(False, help="skip when the newest automatic set already uses the newest projections"),
 ):
-    """Build a set of DK classic lineups from the latest projections."""
+    """Build a set of DraftKings lineups (classic or showdown) from the latest projections."""
     import polars as pl
 
     from optimizer import portfolio, slate, store
@@ -454,9 +455,9 @@ def lineups_build(
         pool, label = slate.from_files(csv, projections), Path(csv).stem
     else:
         with _db.connect(settings().db_url) as conn:
-            slate_id = slate_id or slate.latest_slate_id(conn)
+            slate_id = slate_id or slate.latest_slate_id(conn, slate_type)
             if slate_id is None:
-                typer.echo("no upcoming DraftKings classic slate in bsb.dfs_slates — upload a salary export to slates/")
+                typer.echo(f"no upcoming DraftKings {slate_type} slate in bsb.dfs_slates — upload a salary export to slates/")
                 raise typer.Exit(0)
             pool, info = slate.from_db(conn, slate_id)
             if if_stale and write:
@@ -479,9 +480,15 @@ def lineups_build(
         return out
 
     st = portfolio.Settings(n=n, mode=mode, max_exposure=max_exposure, min_unique=min_unique, seed=seed)
-    base = st.resolved_rules()
-    st.rules = Rules(**{**base.__dict__, "lock": ids(lock), "exclude": ids(exclude)})
-    pf = portfolio.build(pool, st)
+    if info.get("slate_type") == "showdown":
+        from optimizer.jobs import showdown_set
+
+        st.min_unique = min(min_unique, 2)
+        pf = showdown_set(pool, st, ids(lock), ids(exclude))
+    else:
+        base = st.resolved_rules()
+        st.rules = Rules(**{**base.__dict__, "lock": ids(lock), "exclude": ids(exclude)})
+        pf = portfolio.build(pool, st)
     if not pf.lineups:
         typer.echo("no legal lineup could be built: " + "; ".join(pf.notes))
         raise typer.Exit(1)

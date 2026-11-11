@@ -1,4 +1,4 @@
-export type Pos = "QB" | "RB" | "WR" | "TE" | "DST";
+export type Pos = "QB" | "RB" | "WR" | "TE" | "DST" | "K";
 
 export interface PoolPlayer {
   slate_id: number;

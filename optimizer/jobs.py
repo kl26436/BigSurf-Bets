@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import portfolio, slate, store
+from . import portfolio, showdown, slate, store
 from .classic import Rules
 
 
@@ -40,26 +40,47 @@ def auto_set_is_current(conn, slate_id: int, mode: str, run_id: int | None) -> b
     return bool(row) and row[0] == run_id and (row[2] is None or row[2] < row[1])
 
 
+def showdown_set(pool, st: portfolio.Settings, lock: set[str], exclude: set[str], min_salary: int = 0,
+                 captain: set[str] | None = None) -> showdown.ShowdownPortfolio:
+    """A single-game (captain) set. The classic strategy rules do not apply; what
+    is recorded with the set is only what was used."""
+    st.rules = Rules(min_salary=min_salary, lock=lock, exclude=exclude, no_offense_vs_dst=False)
+    return showdown.build(pool, st, showdown.Rules(min_salary=min_salary, lock=lock, exclude=exclude, captain=captain or set()))
+
+
 def build_lineups(conn, job_id: int, payload: dict[str, Any]) -> dict:
     """Build the set a build_lineups job asks for and store it (source = 'user')."""
     slate_id = payload.get("slate_id") or slate.latest_slate_id(conn)
     if slate_id is None:
-        raise JobError("there is no upcoming DraftKings classic slate to build from")
+        raise JobError("there is no upcoming DraftKings slate to build from")
     mode = payload.get("mode", "gpp")
     if mode not in ("gpp", "cash"):
         raise JobError("mode must be gpp or cash")
-    n = int(_num(payload, "n", 20, 1, 150))
-    st = portfolio.Settings(
-        n=n, mode=mode, max_exposure=_num(payload, "max_exposure", 0.5, 0.01, 1),
-        min_unique=int(_num(payload, "min_unique", 3, 1, 8)), seed=int(_num(payload, "seed", 7, 0, 1e9)),
-    )
     pool, info = slate.from_db(conn, int(slate_id))
     if pool.is_empty():
         raise JobError("no projected players on this slate yet")
+    single = info.get("slate_type") == "showdown"
+    n = int(_num(payload, "n", 10 if single else 20, 1, 150))
+    st = portfolio.Settings(
+        n=n, mode=mode, max_exposure=_num(payload, "max_exposure", 0.6 if single else 0.5, 0.01, 1),
+        min_unique=int(_num(payload, "min_unique", 2 if single else 3, 1, 5 if single else 8)), seed=int(_num(payload, "seed", 7, 0, 1e9)),
+    )
     known = set(pool["dk_id"].to_list())
     lock = {str(x) for x in payload.get("lock") or []}
     exclude = {str(x) for x in payload.get("exclude") or []}
     gone = sorted(lock - known)
+    label = (payload.get("label") or "").strip()[:60] or None
+    if single:
+        if len(lock & known) > 6:
+            raise JobError("more than six players are locked")
+        captain = {str(x) for x in payload.get("captain") or []} & known
+        pf = showdown_set(pool, st, lock & known, exclude & known, int(_num(payload, "min_salary", 0, 0, 50_000)), captain)
+        if not pf.lineups:
+            raise JobError("no legal lineup under these rules: " + "; ".join(pf.notes or ["locks and limits conflict"]))
+        if gone:
+            pf.notes.append(f"{len(gone)} locked player(s) are no longer playable on this slate and were ignored")
+        set_id = store.write_db(conn, pf, info["id"], info.get("run_id"), source="user", job_id=job_id, label=label)
+        return {"set_id": set_id, "slate_id": info["id"], "n_lineups": len(pf.lineups), "notes": pf.notes, **store.set_summary(pf)}
     if len(lock & known) > 9:
         raise JobError("more than nine players are locked")
     over: dict[str, Any] = {}
@@ -77,6 +98,5 @@ def build_lineups(conn, job_id: int, payload: dict[str, Any]) -> dict:
         raise JobError("no legal lineup under these rules: " + "; ".join(pf.notes or ["locks and limits conflict"]))
     if gone:
         pf.notes.append(f"{len(gone)} locked player(s) are no longer playable on this slate and were ignored")
-    label = (payload.get("label") or "").strip()[:60] or None
     set_id = store.write_db(conn, pf, info["id"], info.get("run_id"), source="user", job_id=job_id, label=label)
     return {"set_id": set_id, "slate_id": info["id"], "n_lineups": len(pf.lineups), "notes": pf.notes, **store.set_summary(pf)}

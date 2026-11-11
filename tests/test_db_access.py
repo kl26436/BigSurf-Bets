@@ -32,7 +32,7 @@ def db_url():
         c.execute((Path(__file__).parent / "db" / "supabase_stub.sql").read_text())
     from ingest import db
 
-    assert len(db.migrate(url)) >= 16
+    assert len(db.migrate(url)) >= 17
     assert db.migrate(url) == []          # second run applies nothing
     _seed(url)
     yield url
@@ -198,9 +198,9 @@ def _legal_nine(c) -> list[str]:
     ids = []
     for pos, k in (("QB", 1), ("RB", 2), ("WR", 3), ("TE", 1)):
         ids += [r[0] for r in c.execute(
-            "select dk_id from public.app_pool where pos = %s order by salary limit %s", (pos, k)).fetchall()]
-    ids.append(c.execute("select dk_id from public.app_pool where pos = 'RB' order by salary offset 2 limit 1").fetchone()[0])
-    ids.append(c.execute("select dk_id from public.app_pool where pos = 'DST' order by salary limit 1").fetchone()[0])
+            "select dk_id from public.app_pool where slate_id = 1 and pos = %s order by salary limit %s", (pos, k)).fetchall()]
+    ids.append(c.execute("select dk_id from public.app_pool where slate_id = 1 and pos = 'RB' order by salary offset 2 limit 1").fetchone()[0])
+    ids.append(c.execute("select dk_id from public.app_pool where slate_id = 1 and pos = 'DST' order by salary limit 1").fetchone()[0])
     return ids
 
 
@@ -251,6 +251,72 @@ def test_app_job_builds_a_lineup_set(db_url, monkeypatch):
     with As(db_url, "authenticated", ALICE) as c:
         status, err = c.execute("select status, error from public.app_jobs where id = %s", (job2,)).fetchone()
         assert status == "failed" and "between" in err
+
+
+def test_a_showdown_salary_file_becomes_captain_lineups(db_url, monkeypatch, tmp_path):
+    """A single-game export (every player twice: captain and ordinary) is imported,
+    a set is built through an app job, and the lineups come back six to a lineup."""
+    from typer.testing import CliRunner
+
+    from ingest import cli
+    from ingest.draftkings import import_csv
+
+    with psycopg.connect(db_url) as c:
+        kick, gid = c.execute("select kickoff_at, game_id from bsb.games where home_team = 'AAA' and away_team = 'BBB'").fetchone()
+        for n, team in enumerate(("AAA", "BBB")):                     # a kicker a side, projected like everyone else
+            pid = f"00-K00000{n}"
+            c.execute("insert into bsb.players (player_id, display_name, position, latest_team, status) values (%s, %s, 'K', %s, 'ACT') on conflict do nothing",
+                      (pid, f"Kick {team.title()}", team))
+            c.execute("""insert into bsb.projections (run_id, season, week, player_id, game_id, team, opponent, position, dk_mean, dk_std, dk_p10, dk_p25, dk_p50, dk_p75, dk_p90)
+                         select max(id), 2026, 10, %s, %s, %s, %s, 'K', 8.5, 4, 3, 5, 8, 11, 15 from bsb.model_runs on conflict do nothing""",
+                      (pid, gid, team, "BBB" if team == "AAA" else "AAA"))
+        rows = c.execute(
+            """select s.position, s.player_name, s.site_player_id, s.salary, s.team from bsb.dfs_salaries s
+               where s.slate_id = 1 and s.team in ('AAA', 'BBB')
+               union all select 'K', 'Kick Aaa', '49001', 4000, 'AAA' union all select 'K', 'Kick Bbb', '49002', 4200, 'BBB'""").fetchall()
+        from zoneinfo import ZoneInfo
+        info = f"BBB@AAA {kick.astimezone(ZoneInfo('America/New_York')):%m/%d/%Y %I:%M%p} ET"
+        lines = ["Position,Name + ID,Name,ID,Roster Position,Salary,Game Info,TeamAbbrev,AvgPointsPerGame"]
+        for pos, name, sid, salary, team in rows:
+            lines.append(f"{pos},{name} ({sid}),{name},{sid},FLEX,{salary},{info},{team},9.5")
+            lines.append(f"{pos},{name} (9{sid}),{name},9{sid},CPT,{int(salary * 1.5)},{info},{team},9.5")
+        f = tmp_path / "showdown.csv"
+        f.write_text("\n".join(lines) + "\n")
+        assert import_csv(c, f, slate_name="mnf") == len(rows) * 2
+        sd, kind, wk = c.execute("select id, slate_type, week from bsb.dfs_slates where slate_name = 'mnf'").fetchone()
+        assert kind == "showdown" and wk == 10
+        assert c.execute("select count(*) from bsb.dfs_salaries where slate_id = %s and player_id is null", (sd,)).fetchone()[0] == 0
+
+    with As(db_url, "authenticated", ALICE) as c:
+        k = c.execute("select dk_id from public.app_pool where slate_id = %s and pos = 'K' and dk_id not like '%%-CPT' limit 1", (sd,)).fetchone()[0]
+        qb = c.execute("select dk_id from public.app_pool where slate_id = %s and pos = 'QB' and dk_id not like '%%-CPT' order by dk_mean desc limit 1", (sd,)).fetchone()[0]
+        job = c.execute("select public.bsb_request_job('build_lineups', %s::jsonb)",
+                        (json.dumps({"slate_id": sd, "mode": "gpp", "n": 5, "lock": [k], "captain": [qb], "label": "Monday night"}),)).fetchone()[0]
+    monkeypatch.setenv("SUPABASE_DB_URL", db_url)
+    res = CliRunner().invoke(cli.app, ["app", "run-job", str(job)])
+    assert res.exit_code == 0, res.output
+    with As(db_url, "authenticated", ALICE) as c:
+        status, result = c.execute("select status, result from public.app_jobs where id = %s", (job,)).fetchone()
+        assert status == "done" and result["n_lineups"] == 5, result
+        sid = result["set_id"]
+        per = c.execute("""select lineup_no, count(*), sum(salary), count(*) filter (where slot = 'CPT'), count(distinct team),
+                                  bool_or(dk_id = %s), min(dk_id) filter (where slot = 'CPT')
+                           from public.app_lineup_players where set_id = %s group by 1 order by 1""", (k, sid)).fetchall()
+        assert len(per) == 5
+        for _, n, salary, caps, teams, has_kicker, cap_id in per:
+            # the captain row has its own DraftKings id (here the ordinary id with a 9 in front), as in a real export
+            assert (n, caps, teams, has_kicker) == (6, 1, 2, True) and salary <= 50_000 and cap_id == "9" + qb + "-CPT"
+        stored = dict(c.execute("select lineup_no, salary from public.app_lineups where set_id = %s", (sid,)).fetchall())
+        assert all(stored[no] == salary for no, _, salary, *_ in per)
+        rules = c.execute("select settings->'rules' from public.app_lineup_sets where id = %s", (sid,)).fetchone()[0]
+        assert rules["qb_stack"] == 0 and rules["lock"] == [k]          # recorded as built: no classic stacking rule
+    # the command line builds one for the newest single-game slate, as the Lineups workflow does
+    res = CliRunner().invoke(cli.app, ["lineups", "build", "--slate-type", "showdown", "--mode", "gpp", "--n", "3", "--max-exposure", "0.67", "--min-unique", "2"])
+    assert res.exit_code == 0 and "CPT" in res.output, res.output
+    with psycopg.connect(db_url) as c:
+        assert c.execute("select count(*) from bsb.lineup_sets where slate_id = %s and source = 'auto'", (sd,)).fetchone()[0] == 1
+        # kickers never show up as fantasy pick-ups
+        assert c.execute("select pg_get_viewdef('public.app_free_agents'::regclass)").fetchone()[0].count("'K'") == 0
 
 
 def _stored_set(url: str, source: str, mode: str = "gpp", n: int = 2, entered: bool = False, archived: bool = False,
@@ -377,7 +443,7 @@ def test_entered_is_per_lineup_and_a_player_can_be_swapped(db_url):
         with pytest.raises(psycopg.errors.RaiseException, match="no such lineup"):
             c.execute("select public.bsb_replace_lineup(%s, 99, %s)", (sid, nine))
         # a player whose game has started can be neither taken out nor put in
-        other_te = c.execute("select dk_id, game_id from public.app_pool where pos = 'TE' and dk_id <> %s order by salary limit 1", (nine[6],)).fetchone()
+        other_te = c.execute("select dk_id, game_id from public.app_pool where slate_id = 1 and pos = 'TE' and dk_id <> %s order by salary limit 1", (nine[6],)).fetchone()
     swapped = [*nine[:6], other_te[0], *nine[7:]]
     with psycopg.connect(db_url) as c:
         before = c.execute("select kickoff_at from bsb.games where game_id = %s", (other_te[1],)).fetchone()[0]
@@ -401,7 +467,7 @@ def test_draftkings_entries_are_linked_to_lineups(db_url):
     with As(db_url, "authenticated", ALICE) as c:
         nine = _legal_nine(c)
         # a nine no other stored lineup has (an earlier test saved the cheapest one by hand)
-        nine[6] = c.execute("select dk_id from public.app_pool where pos = 'TE' and dk_id <> %s order by salary desc limit 1", (nine[6],)).fetchone()[0]
+        nine[6] = c.execute("select dk_id from public.app_pool where slate_id = 1 and pos = 'TE' and dk_id <> %s order by salary desc limit 1", (nine[6],)).fetchone()[0]
         c.execute("select public.bsb_replace_lineup(%s, 1, %s)", (sid, nine))
         entries = [{"entry_id": "e1", "contest_id": "c9", "contest_name": "NFL $5 Double Up", "entry_fee": "5", "players": list(reversed(nine))},
                    {"entry_id": "e2", "contest_id": "c9", "contest_name": "NFL $5 Double Up", "entry_fee": "5", "players": None}]
