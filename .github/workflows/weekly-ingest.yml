@@ -73,6 +73,7 @@ jobs:
         env:
           SCHEDULE: ${{ github.event.schedule }}
           JOBS_INPUT: ${{ inputs.jobs }}
+          APP_JOB_ID: ${{ inputs.app_job_id }}
         run: |
           gap_status=0; gap_other=0
           if [[ -n "$SCHEDULE" ]]; then
@@ -90,8 +91,13 @@ jobs:
           for j in stats status odds league; do
             if [[ ",$jobs," == *",$j,"* ]]; then echo "$j=true" >> "$GITHUB_OUTPUT"; else echo "$j=false" >> "$GITHUB_OUTPUT"; fi
           done
+          # asked for from the app: OddsPapi only if the month's allowance has a spare pull,
+          # and never twice within ten minutes
+          odds_flags=""
+          if [[ -n "$APP_JOB_ID" ]]; then odds_flags="--on-demand"; gap_other=10; fi
           echo "gap_status=$gap_status" >> "$GITHUB_OUTPUT"
           echo "gap_other=$gap_other" >> "$GITHUB_OUTPUT"
+          echo "odds_flags=$odds_flags" >> "$GITHUB_OUTPUT"
           echo "running: $jobs (schedule: ${SCHEDULE:-manual})"
 
       - name: Apply migrations
@@ -111,7 +117,7 @@ jobs:
 
       - name: Odds — OddsPapi
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
-        run: bsb odds oddspapi --days 7 --min-gap "${{ steps.plan.outputs.gap_other }}"
+        run: bsb odds oddspapi --days 7 --min-gap "${{ steps.plan.outputs.gap_other }}" ${{ steps.plan.outputs.odds_flags }}
 
       - name: Odds — OddsLink
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import * as demo from "./demo";
 import {
-  DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
+  DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow, type PullStatus,
   type LineupSet, type PoolPlayer, type PropEdge, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type PushDevice, type SentNote, type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
   type Contest, type ContestEntry, type ContestPlayer,
@@ -160,6 +160,8 @@ export const useContestPlayers = (contestId: number | null) =>
 export const useKnownEntryIds = () =>
   useQuery({ queryKey: ["entries", "ids"], staleTime: 5 * MIN, queryFn: async () =>
     new Set((DEMO ? await demo.listEntries() : await all<DkEntry>("app_dk_entries")).map((e) => e.entry_id)) });
+export const usePulls = () =>
+  useQuery({ queryKey: ["pulls"], refetchInterval: 5 * MIN, queryFn: () => (DEMO ? demo.pulls : all<PullStatus>("app_pull_status")) });
 export const useJobs = () =>
   useQuery({ queryKey: ["jobs"], queryFn: () => (DEMO ? demo.jobs() : all<Job>("app_jobs", (q) => q.order("created_at", { ascending: false }), 15)),
     refetchInterval: (q) => ((q.state.data ?? []).some((j) => ["queued", "dispatched", "running"].includes(j.status)) ? 8000 : MIN) });
@@ -265,7 +267,8 @@ const CHANGES: Record<string, string[]> = {
   import_slate: ["slates", "pool", "sets", "health"],
   project: ["pool", "projections", "sets", "set", "props", "roster", "free-agents", "health", "dists", "model-runs", "waiver-run", "waiver-recs"],
   refresh_status: ["pool", "projections", "health", "events"],
-  refresh_odds: ["quotes", "props", "games", "health"],
+  refresh_odds: ["quotes", "props", "games", "health", "pulls"],
+  refresh_league: ["roster", "free-agents", "waiver-run", "waiver-recs", "pulls"],
   refresh_stats: ["health"],
   notify_test: ["sent-notes", "push-devices", "push-key"],
 };

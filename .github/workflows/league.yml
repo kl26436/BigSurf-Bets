@@ -1,0 +1,69 @@
+name: League pull
+
+# The Sleeper league (rosters, lineups as set, transactions), read every hour and
+# whenever the app asks. Sleeper's API is free and keyless. A snapshot is stored
+# only when something changed, and the waiver numbers are worked out again only
+# then (or when the pull was asked for by hand).
+#
+# The hourly timetable lives in Supabase (pg_cron → workflow_dispatch, migration
+# 0019). The cron line below is the fallback: every two hours, and it skips when
+# the league was read in the last 50 minutes.
+on:
+  schedule:
+    - cron: "47 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      app_job_id:
+        description: "bsb.app_jobs id to mark finished (set by the app)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: league
+  cancel-in-progress: false
+
+env:
+  SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+  SLEEPER_LEAGUE_ID: ${{ vars.SLEEPER_LEAGUE_ID }}
+  SLEEPER_USERNAME: ${{ vars.SLEEPER_USERNAME }}
+
+jobs:
+  league:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[model]"
+
+      - name: Apply migrations
+        run: bsb db migrate
+
+      - name: Read the league
+        id: pull
+        if: env.SLEEPER_LEAGUE_ID != ''
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          gap=0
+          if [[ "$EVENT" == "schedule" ]]; then gap=50; fi
+          bsb sleeper league "$SLEEPER_LEAGUE_ID" --username "$SLEEPER_USERNAME" --min-gap "$gap"
+
+      # chop odds, start/sit and bids from the rosters just read
+      - name: Waiver bids
+        if: steps.pull.outputs.changed == 'true' || (steps.pull.outcome == 'success' && inputs.app_job_id != '')
+        run: bsb league bids
+
+      - name: Tell the app
+        if: always() && inputs.app_job_id != ''
+        env:
+          APP_JOB_ID: ${{ inputs.app_job_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          [[ "$APP_JOB_ID" =~ ^[0-9]+$ ]] || exit 0
+          if [[ "$OUTCOME" == "success" ]]; then bsb app finish-job "$APP_JOB_ID" --ok; else bsb app finish-job "$APP_JOB_ID" --failed; fi

@@ -40,6 +40,7 @@ class OddsPapi:
         self.key = api_key
         self.h = httpx.Client(base_url=BASE, timeout=60)
         self.calls = 0
+        self.tally: dict | None = None   # a run's detail: the count survives a pull that fails half-way
         self._last = 0.0
 
     def get(self, path: str, **params):
@@ -51,6 +52,8 @@ class OddsPapi:
         r = self.h.get(path, params=q)
         self._last = time.monotonic()
         self.calls += 1
+        if self.tally is not None:
+            self.tally["api_calls"] = self.calls
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code} from {path}: {r.text[:4000]}")
         return r.json()
@@ -139,6 +142,7 @@ def snapshot_upcoming(
 ) -> int:
     api = OddsPapi(api_key)
     with RunLogger(conn, "odds.oddspapi") as run:
+        api.tally = run.detail
         tid = api.nfl_tournament_id()
         now = datetime.now(UTC)
         fixtures = {str(f["fixtureId"]): f for f in api.fixtures(tid, now, now + timedelta(days=days))}

@@ -1,3 +1,4 @@
+import { PullNow } from "../components/PullNow";
 import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag } from "../components/ui";
 import { useFreeAgents, useRoster, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, kickoff, pct, pts, signed, usd } from "../lib/format";
@@ -150,15 +151,16 @@ export function League() {
   if (mine.length === 0) {
     return (
       <div className="stack">
-        <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1></div>
-        <Empty title="No roster found" why="Your Sleeper roster is read on Tuesdays and Saturdays." how="It appears after the next league refresh." />
+        <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1><PullNow kind="refresh_league" /></div>
+        <Empty title="No roster found" why="Your Sleeper roster is read every hour." how="Pull from Sleeper to read it now." />
       </div>
     );
   }
   return (
     <div className="stack">
       <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1>
-        <p className="small muted">Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</p></div>
+        <PullNow kind="refresh_league" />
+        <p className="small muted">Read from Sleeper every hour. Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</p></div>
 
       {r && (
         <section aria-label="Where you stand" className="stack stack--tight">

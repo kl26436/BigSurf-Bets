@@ -70,17 +70,18 @@ def migrate(db_url: str) -> list[str]:
     return applied
 
 
-def recent_ok(conn: psycopg.Connection, job: str, minutes: int) -> bool:
+def recent_ok(conn: psycopg.Connection, job: str, minutes: int, need_rows: bool = True) -> bool:
     """Has `job` already succeeded (and written rows) in the last `minutes`?
     Lets two schedulers overlap without doing the work — or spending the API
-    quota — twice."""
+    quota — twice. `need_rows=False` is for jobs that write nothing when
+    nothing changed (the league pull)."""
     if minutes <= 0:
         return False
     row = conn.execute(
         """select 1 from bsb.ingest_runs
-           where job = %s and ok and coalesce(rows_written, 0) > 0
+           where job = %s and ok and (not %s or coalesce(rows_written, 0) > 0)
              and finished_at > now() - make_interval(mins => %s) limit 1""",
-        (job, minutes),
+        (job, need_rows, minutes),
     ).fetchone()
     return row is not None
 
