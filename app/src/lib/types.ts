@@ -352,3 +352,15 @@ export interface ModelRun {
   id: number; created_at: string; model_version: string; season: number; week: number; n_players: number | null; n_ruled_out: number | null;
   metrics: Record<string, number> | null; git_sha: string | null;
 }
+
+/** When a feed the app can pull was last read. `changed_at`: the last read that stored something new. The allowance columns are OddsPapi's only. */
+export interface PullStatus {
+  job: "sleeper.league" | "odds.oddslink" | "odds.oddspapi";
+  label: string;
+  checked_at: string | null;
+  changed_at: string | null;
+  monthly: number | null;
+  used: number | null;
+  reserved: number | null;
+  pulls_left: number | null;
+}

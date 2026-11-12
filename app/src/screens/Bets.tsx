@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { BetSheet, usd2, vsFair } from "../components/BetSheet";
 import { PriceLine } from "../components/PriceLine";
+import { PullNow } from "../components/PullNow";
 import { Empty, ErrorNote, Facts, Loading, Sheet } from "../components/ui";
 import { useBets, useDeleteBet, useGradeBets, usePropEdges, useQuotes, useSettings, useSettleBet } from "../lib/api";
 import { useSheet, useTitle } from "../lib/nav";
@@ -72,6 +73,7 @@ export function Bets() {
             <button className="chip" aria-pressed={kind === "players"} onClick={() => setBetsView({ kind: "players" })}>Players</button>
           </div>
         )}
+        {(view === "best" || view === "prices") && <PullNow kind="refresh_odds" />}
       </div>
 
       {view === "best" && (kind === "games"

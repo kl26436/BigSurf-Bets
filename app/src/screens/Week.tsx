@@ -17,7 +17,7 @@ const STATE: Record<FeedHealth["state"], { label: string; tone: string }> = {
 };
 export const JOB_NAME: Record<string, string> = {
   build_lineups: "Lineup build", import_slate: "Salary upload", refresh_status: "Player status check",
-  refresh_odds: "Price refresh", refresh_stats: "Stats refresh", project: "Expected points re-run", notify_test: "Test notification",
+  refresh_odds: "Price refresh", refresh_stats: "Stats refresh", refresh_league: "League pull", project: "Expected points re-run", notify_test: "Test notification",
 };
 export const JOB_STATE: Record<Job["status"], { label: string; tone: string }> = {
   queued: { label: "Queued", tone: "pill--warn" }, dispatched: { label: "Starting", tone: "pill--warn" }, running: { label: "Running", tone: "pill--warn" },

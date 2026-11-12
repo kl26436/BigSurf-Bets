@@ -75,25 +75,48 @@ def transaction_rows(league_id: str, txs: list[dict]) -> list[tuple]:
     return rows
 
 
-def snapshot_transactions(conn: psycopg.Connection, league_id: str, through_week: int) -> int:
+def snapshot_transactions(conn: psycopg.Connection, league_id: str, through_week: int) -> tuple[int, int]:
     """Every transaction of the season so far (waiver bids won and lost, chops).
-    Needs migration 0010; skipped quietly before it is applied."""
+    Returns (seen, new or changed). Needs migration 0010; skipped quietly before
+    it is applied."""
     if not conn.execute("select to_regclass('bsb.fantasy_transactions')").fetchone()[0]:
-        return 0
-    n = 0
+        return 0, 0
+    n = changed = 0
     for week in range(1, max(through_week, 1) + 2):
         rows = transaction_rows(league_id, transactions(league_id, week))
-        if rows:
-            conn.cursor().executemany(
+        for row in rows:
+            cur = conn.execute(
                 """insert into bsb.fantasy_transactions (transaction_id, league_id, leg, type, status, roster_id,
                        player_id, drop_player_id, bid, adds, drops, created, status_updated, note)
                    values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    on conflict (transaction_id) do update set status = excluded.status,
-                       status_updated = excluded.status_updated, note = excluded.note""",
-                rows,
+                       status_updated = excluded.status_updated, note = excluded.note
+                   where (bsb.fantasy_transactions.status, bsb.fantasy_transactions.status_updated, bsb.fantasy_transactions.note)
+                         is distinct from (excluded.status, excluded.status_updated, excluded.note)""",
+                row,
             )
-            n += len(rows)
-    return n
+            changed += cur.rowcount
+        n += len(rows)
+    return n, changed
+
+
+def _roster_key(r: dict) -> tuple:
+    """What makes two looks at a roster different: who is on it, who starts, the record and the points."""
+    return (r["roster_id"], r.get("owner_user_id"), bool(r.get("is_me")), tuple(r.get("starters") or []),
+            tuple(sorted(r.get("players") or [])), tuple(sorted(r.get("reserve") or [])),
+            r.get("wins"), r.get("losses"), round(float(r.get("fpts") or 0), 2), r.get("week"))
+
+
+def rosters_changed(conn: psycopg.Connection, league_id: str, rows: list[dict]) -> bool:
+    """Do these rosters differ from the newest snapshot on file?"""
+    last = conn.execute(
+        """select roster_id, owner_user_id, is_me, starters, players, reserve, wins, losses, fpts, week
+           from bsb.fantasy_roster_snapshots
+           where league_id = %s and captured_at = (select max(captured_at) from bsb.fantasy_roster_snapshots where league_id = %s)""",
+        (league_id, league_id),
+    ).fetchall()
+    cols = ("roster_id", "owner_user_id", "is_me", "starters", "players", "reserve", "wins", "losses", "fpts", "week")
+    return {_roster_key(dict(zip(cols, r, strict=True))) for r in last} != {_roster_key(r) for r in rows}
 
 
 def ensure_schema(conn: psycopg.Connection) -> None:
@@ -130,7 +153,8 @@ def ensure_schema(conn: psycopg.Connection) -> None:
     )
 
 
-def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str | None = None) -> int:
+def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str | None = None) -> bool:
+    """Read the league from Sleeper. True when rosters, lineups or transactions changed since the last look."""
     with RunLogger(conn, "sleeper.league") as run:
         ensure_schema(conn)
         lg = league(league_id)
@@ -174,8 +198,14 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
                     "raw": r,
                 }
             )
-        run.rows = insert_df(conn, "fantasy_roster_snapshots", pl.DataFrame(rows, infer_schema_length=None))
-        txs = snapshot_transactions(conn, league_id, week)
-        run.detail.update(league=lg.get("name"), week=week, rosters=len(rows), transactions=txs)
+        # Pulled every hour: keep a new snapshot only when something moved, so the
+        # table grows with the league's activity and not with the clock.
+        moved = rosters_changed(conn, league_id, rows)
+        if moved:
+            run.rows = insert_df(conn, "fantasy_roster_snapshots", pl.DataFrame(rows, infer_schema_length=None))
+        txs, tx_changed = snapshot_transactions(conn, league_id, week)
+        changed = moved or tx_changed > 0
+        run.detail.update(league=lg.get("name"), week=week, rosters=len(rows), transactions=txs,
+                          new_transactions=tx_changed, changed=changed)
         conn.commit()
-        return run.rows
+        return changed

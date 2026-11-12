@@ -5,7 +5,7 @@ import {
   DEFAULT_SETTINGS, type AppEvent, type Bet, type DkEntry, type FeedHealth, type Game, type Job, type LineQuote, type LineupPlayer, type LineupRow,
   type LineupSet, type PoolPlayer, type Pos, type PropEdge, type PushDevice, type RosterPlayer, type Scorecard, type Settings, type Slate,
   type WaiverRec, type WaiverRun, type ModelDist, type ModelRun, type Override, type PlayerResult, type PropResult,
-  type Contest, type ContestEntry, type ContestPlayer,
+  type Contest, type ContestEntry, type ContestPlayer, type PullStatus,
 } from "./types";
 
 let seed = 7;
@@ -106,6 +106,12 @@ export const health: FeedHealth[] = [
 ].map(([job, label, age, max, state], i) => ({
   job, label, sort: i, last_ok_at: hoursAgo(age as number), last_rows: 400, age_hours: age, max_age_hours: max, state, last_error: null,
 })) as FeedHealth[];
+
+export const pulls: PullStatus[] = [
+  { job: "sleeper.league", label: "Sleeper league", checked_at: hoursAgo(0.4), changed_at: hoursAgo(5), monthly: null, used: null, reserved: null, pulls_left: null },
+  { job: "odds.oddslink", label: "Game lines", checked_at: hoursAgo(91), changed_at: hoursAgo(91), monthly: null, used: null, reserved: null, pulls_left: null },
+  { job: "odds.oddspapi", label: "Props and sharp lines", checked_at: hoursAgo(20), changed_at: hoursAgo(20), monthly: 250, used: 84, reserved: 70, pulls_left: 13 },
+];
 
 function buildLineup(k: number): PoolPlayer[] {
   const by = (pos: Pos) => pool.filter((p) => p.pos === pos).sort((a, b) => (b.dk_mean! / b.salary) - (a.dk_mean! / a.salary));

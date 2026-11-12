@@ -4,6 +4,7 @@ anything the workflows do can be reproduced locally."""
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import typer
@@ -182,12 +183,23 @@ def leagues(username: str):
 
 
 @sleeper_app.command()
-def league(league_id: str, username: str = typer.Option(None, help="your Sleeper username, to flag your roster")):
-    """Snapshot rosters + settings for a league."""
+def league(
+    league_id: str,
+    username: str = typer.Option(None, help="your Sleeper username, to flag your roster"),
+    min_gap: int = typer.Option(0, help="skip if the league was read within this many minutes"),
+):
+    """Read rosters, lineups and transactions for a league; a new snapshot is kept only when something changed."""
     from .sleeper_league import snapshot_league
 
     with _db.connect(settings().db_url) as conn:
-        snapshot_league(conn, league_id, username)
+        if _db.recent_ok(conn, "sleeper.league", min_gap, need_rows=False):
+            typer.echo(f"league read within the last {min_gap} min — skipped")
+            return
+        changed = snapshot_league(conn, league_id, username)
+    typer.echo("league changed since the last look" if changed else "league unchanged")
+    if os.getenv("GITHUB_OUTPUT"):   # the workflow re-runs the waiver numbers only when something moved
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"changed={'true' if changed else 'false'}\n")
 
 
 @league_app.command("bids")
@@ -207,7 +219,11 @@ def league_bids(
 # --- odds -------------------------------------------------------------------
 
 @odds_app.command()
-def oddspapi(days: int = 7, min_gap: int = typer.Option(0, help="skip if a snapshot was taken within this many minutes")):
+def oddspapi(
+    days: int = 7,
+    min_gap: int = typer.Option(0, help="skip if a snapshot was taken within this many minutes"),
+    on_demand: bool = typer.Option(False, help="asked for from the app: only spend requests the timetable does not need this month"),
+):
     """Snapshot upcoming NFL boards from OddsPapi (uses ODDSPAPI_BOOKMAKERS)."""
     from .odds_oddspapi import snapshot_upcoming
 
@@ -218,6 +234,11 @@ def oddspapi(days: int = 7, min_gap: int = typer.Option(0, help="skip if a snaps
         if _db.recent_ok(conn, "odds.oddspapi", min_gap):   # 250 requests a month: never spend them twice
             typer.echo(f"OddsPapi snapshot taken within the last {min_gap} min — skipped")
             return
+        if on_demand:
+            used, reserved, left = conn.execute("select used, reserved, pulls_left from bsb.oddspapi_budget()").fetchone()
+            if left <= 0:
+                typer.echo(f"OddsPapi: {used} requests used this month and {reserved} kept for the timetable — no spare pull, skipped")
+                return
         snapshot_upcoming(conn, cfg.oddspapi_key, list(cfg.oddspapi_bookmakers), days)
 
 

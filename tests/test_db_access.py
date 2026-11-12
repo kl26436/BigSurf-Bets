@@ -106,7 +106,7 @@ class As:
 VIEWS = ["app_feed_health", "app_model_runs", "app_slates", "app_pool", "app_projections", "app_games", "app_lineup_sets",
          "app_lineups", "app_lineup_players", "app_line_quotes", "app_prop_edges", "app_scorecards", "app_player_log",
          "app_my_roster", "app_free_agents", "app_jobs", "app_overrides", "app_dk_entries", "app_bets",
-         "app_events", "app_push_devices", "app_notifications"]
+         "app_events", "app_push_devices", "app_notifications", "app_pull_status"]
 
 
 def test_every_table_has_row_level_security(db_url):
@@ -1153,3 +1153,110 @@ def test_the_app_can_ask_for_a_test_notification(db_url):
     with psycopg.connect(db_url) as c:
         kind, status, error = c.execute("select kind, status, error from bsb.app_jobs where id = %s", (job,)).fetchone()
         assert kind == "notify_test" and status == "needs_setup" and "github_pat" in error      # no token in the test database: saved, not started
+
+
+def test_league_pull_keeps_a_snapshot_only_when_something_changed(db_url, monkeypatch):
+    """Read hourly, the league must not add a full set of rosters every hour: a
+    snapshot is stored when a roster, a lineup or a transaction moved, and the
+    run still counts as a check for the app's "checked" time."""
+    from ingest import db as _db
+    from ingest import sleeper_league as sl
+
+    lid = "PULL1"
+    feed = {
+        "rosters": [{"roster_id": 1, "owner_id": "u1", "starters": ["a", "b"], "players": ["a", "b", "c"], "reserve": None,
+                     "settings": {"wins": 3, "losses": 7, "fpts": 900, "fpts_decimal": 12}},
+                    {"roster_id": 2, "owner_id": "u2", "starters": ["d"], "players": ["d", "e"], "reserve": [],
+                     "settings": {"wins": 5, "losses": 5, "fpts": 950, "fpts_decimal": 0}}],
+        "txs": [],
+    }
+    monkeypatch.setattr(sl, "league", lambda _id: {"name": "Pull test", "season": "2026", "total_rosters": 2,
+                                                   "scoring_settings": {}, "roster_positions": ["QB"], "settings": {}})
+    monkeypatch.setattr(sl, "fetch_state", lambda: {"season": "2026", "week": 11})
+    monkeypatch.setattr(sl, "users", lambda _id: [{"user_id": "u1", "display_name": "Me"}, {"user_id": "u2", "display_name": "Them"}])
+    monkeypatch.setattr(sl, "rosters", lambda _id: json.loads(json.dumps(feed["rosters"])))
+    monkeypatch.setattr(sl, "transactions", lambda _id, week: feed["txs"] if week == 11 else [])
+
+    def snapshots(c) -> int:
+        return c.execute("select count(distinct captured_at) from bsb.fantasy_roster_snapshots where league_id = %s", (lid,)).fetchone()[0]
+
+    with psycopg.connect(db_url) as c:
+        assert sl.snapshot_league(c, lid) is True and snapshots(c) == 1
+        assert sl.snapshot_league(c, lid) is False and snapshots(c) == 1          # nothing moved: nothing stored
+        assert _db.recent_ok(c, "sleeper.league", 5, need_rows=False)            # ...but it counts as a look
+        assert not _db.recent_ok(c, "sleeper.league", 0, need_rows=False)
+
+        feed["rosters"][0]["starters"] = ["a", "c"]                               # a lineup change in Sleeper
+        assert sl.snapshot_league(c, lid) is True and snapshots(c) == 2
+
+        feed["txs"] = [{"transaction_id": 9101, "type": "waiver", "status": "pending", "leg": 11, "adds": {"z": 2},
+                        "drops": None, "settings": {"waiver_bid": 40}, "created": 1_790_000_000_000,
+                        "status_updated": 1_790_000_000_000, "roster_ids": [2]}]
+        assert sl.snapshot_league(c, lid) is True and snapshots(c) == 2           # a new bid, rosters the same
+        assert sl.snapshot_league(c, lid) is False                                # the same bid seen again
+        feed["txs"][0]["status"] = "complete"
+        assert sl.snapshot_league(c, lid) is True                                 # the bid went through
+
+        runs = c.execute("select ok, rows_written, detail->>'changed' from bsb.ingest_runs where job = 'sleeper.league' order by id").fetchall()
+    assert [r[2] for r in runs[-6:]] == ["true", "false", "true", "true", "false", "true"]
+    assert all(r[0] for r in runs[-6:])
+
+
+def test_a_refresh_tapped_twice_starts_one_pull_and_the_league_has_its_own_workflow(db_url):
+    with psycopg.connect(db_url) as c:
+        c.execute("insert into bsb.app_users (user_id, role) values (%s, 'owner') on conflict do nothing", (ALICE,))
+        c.commit()
+    with As(db_url, "authenticated", ALICE) as c:
+        first = c.execute("select public.bsb_request_job('refresh_league')").fetchone()[0]
+    with psycopg.connect(db_url) as c:
+        wf, inputs = c.execute("select workflow, inputs from bsb.dispatches order by id desc limit 1").fetchone()
+        assert wf == "league.yml" and inputs == {"app_job_id": str(first)}
+        c.execute("update bsb.app_jobs set status = 'dispatched' where id = %s", (first,))   # GitHub accepted it
+        c.commit()
+    with As(db_url, "authenticated", ALICE) as c:
+        assert c.execute("select public.bsb_request_job('refresh_league')").fetchone()[0] == first
+        other = c.execute("select public.bsb_request_job('refresh_odds')").fetchone()[0]
+    assert other != first
+    with psycopg.connect(db_url) as c:
+        c.execute("update bsb.app_jobs set status = 'done' where id = %s", (first,))
+        c.commit()
+    with As(db_url, "authenticated", ALICE) as c:   # once it has landed, a tap starts a new one
+        assert c.execute("select public.bsb_request_job('refresh_league')").fetchone()[0] != first
+
+
+def test_on_demand_odds_pulls_only_spend_what_the_timetable_does_not_need(db_url):
+    """OddsPapi allows 250 requests a month. What the scheduled pulls still need
+    this month is set aside; only the rest is offered to the "pull now" button."""
+    import calendar
+
+    today = datetime.now(UTC).date()
+    last = calendar.monthrange(today.year, today.month)[1]
+    weights = {6: 2, 0: 1, 3: 1}                     # Python weekday: Sun 2 (Sat night + Sun morning UTC), Mon 1, Thu 1
+    scheduled = sum(weights.get(today.replace(day=d).weekday(), 0) for d in range(today.day, last + 1))
+
+    with psycopg.connect(db_url) as c:
+        c.execute("delete from bsb.ingest_runs where job = 'odds.oddspapi'")
+        c.execute("""insert into bsb.ingest_runs (job, started_at, finished_at, ok, rows_written, detail) values
+                     ('odds.oddspapi', now() - interval '40 days', now() - interval '40 days', true, 10, '{"api_calls": 90}'),
+                     ('odds.oddspapi', date_trunc('month', now()) + interval '1 minute', now(), true, 900, '{"api_calls": 7}'),
+                     ('odds.oddspapi', now() - interval '2 minutes', now() - interval '1 minute', false, 0, '{"api_calls": 4, "error": "x"}'),
+                     ('odds.oddspapi', now() - interval '1 minute', now(), true, 800, '{"api_calls": 7}')""")
+        c.commit()
+        monthly, used, per_pull, reserved, left = c.execute("select * from bsb.oddspapi_budget()").fetchone()
+        assert (monthly, used, per_pull) == (250, 18, 7)                          # last month's 90 don't count; the failed pull's 4 do
+        assert reserved == scheduled * 7
+        assert left == max((250 - 18 - scheduled * 7) // 7, 0)
+
+        c.execute("insert into bsb.app_config (key, value) values ('oddspapi_monthly', '20') on conflict (key) do update set value = excluded.value")
+        c.commit()
+        assert c.execute("select pulls_left from bsb.oddspapi_budget()").fetchone()[0] == 0
+        c.execute("delete from bsb.app_config where key = 'oddspapi_monthly'")
+        c.commit()
+
+    with As(db_url, "authenticated", ALICE) as c:                                 # the app reads it through the view
+        rows = {r[0]: r for r in c.execute("select job, checked_at, changed_at, pulls_left from public.app_pull_status")}
+    assert set(rows) == {"sleeper.league", "odds.oddslink", "odds.oddspapi"}
+    assert rows["odds.oddspapi"][3] == left and rows["odds.oddslink"][3] is None
+    with As(db_url, "authenticated", BOB) as c:                                   # a stranger sees nothing
+        assert c.execute("select * from public.app_pull_status").fetchall() == []
+
