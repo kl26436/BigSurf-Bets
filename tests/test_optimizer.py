@@ -127,3 +127,18 @@ def test_exposure_limits_that_cannot_be_met_stop_cleanly(pool):
     # 1 DST per lineup, 6 DSTs, cap of 1 lineup each → at most 6 lineups
     pf = portfolio.build(pool, portfolio.Settings(n=10, mode="cash", max_exposure=0.1, candidates=2, n_sims=500))
     assert len(pf.lineups) == 6 and pf.notes
+
+
+def test_rows_keep_status_seen_only_after_100_rows(pool):
+    """A questionable player first appearing past row 100 broke polars' schema inference in CI."""
+    p = pool.with_columns(pl.when(pl.col("dk_id") == pool["dk_id"][0]).then(pl.lit("Q"))
+                          .otherwise(pl.lit(None, pl.String)).alias("status"))
+    q = p["dk_id"][0]
+    mean = p["dk_mean"].to_numpy()
+    clean = Solver(p, Rules(exclude={q})).solve(mean)
+    with_q = Solver(p, Rules(lock={q})).solve(mean)
+    lineups = [clean] * 12 + [with_q]          # 108 status-less rows before the "Q"
+    pf = portfolio.Portfolio(p, portfolio.Settings(n=13), lineups, np.zeros((10, 13)))
+    r = pf.rows()
+    assert r.schema["status"] == pl.String and r.filter(pl.col("status") == "Q").height == 1
+    assert pf.to_dk_csv().count("\n") == 14

@@ -169,7 +169,11 @@ class ShowdownPortfolio(Portfolio):
                     salary=int(p["cpt_salary"][i] if cap else p["salary"][i]),
                     dk_mean=round(float(p["dk_mean"][i]) * (CPT if cap else 1.0), 2), status=p["status"][i],
                 ))
-        return pl.DataFrame(out)
+        # types from the pool, not inferred: a nullable column (status) can be empty for the
+        # first 100 rows and then hold "Q", which breaks polars' schema inference
+        cols = ("dk_id", "player_id", "name", "pos", "team", "opponent", "status")
+        return pl.DataFrame(out, schema_overrides={c: p.schema[c] for c in cols if c in p.schema},
+                            infer_schema_length=None)
 
     def exposure(self) -> pl.DataFrame:
         """Per player, whichever role: lineups he is in, and how many of those as captain."""

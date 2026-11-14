@@ -78,7 +78,11 @@ class Portfolio:
                     name=p["name"][int(i)], pos=p["pos"][int(i)], team=p["team"][int(i)], opponent=p["opponent"][int(i)],
                     salary=int(p["salary"][int(i)]), dk_mean=float(p["dk_mean"][int(i)]), status=p["status"][int(i)],
                 ))
-        return pl.DataFrame(out)
+        # types from the pool, not inferred: a nullable column (status) can be empty for the
+        # first 100 rows and then hold "Q", which breaks polars' schema inference
+        cols = ("dk_id", "player_id", "name", "pos", "team", "opponent", "status")
+        return pl.DataFrame(out, schema_overrides={c: p.schema[c] for c in cols if c in p.schema},
+                            infer_schema_length=None)
 
     def exposure(self) -> pl.DataFrame:
         r = self.rows()
