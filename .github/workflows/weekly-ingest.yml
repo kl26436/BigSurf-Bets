@@ -116,10 +116,16 @@ jobs:
         run: bsb sleeper league "$SLEEPER_LEAGUE_ID" --username "$SLEEPER_USERNAME"
 
       - name: Odds — OddsPapi
+        # one odds source being down must not hold back projections and lineups;
+        # the run log and Feed health still show it
+        continue-on-error: true
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSPAPI_API_KEY != ''
         run: bsb odds oddspapi --days 7 --min-gap "${{ steps.plan.outputs.gap_other }}" ${{ steps.plan.outputs.odds_flags }}
 
       - name: Odds — OddsLink
+        # one odds source being down must not hold back projections and lineups;
+        # the run log and Feed health still show it
+        continue-on-error: true
         if: always() && steps.plan.outputs.odds == 'true' && env.ODDSLINK_API_KEY != ''
         run: bsb odds oddslink --min-gap "${{ steps.plan.outputs.gap_other }}"
 

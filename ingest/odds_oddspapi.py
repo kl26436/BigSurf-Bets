@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 BASE = "https://api.oddspapi.io/v4"
 SPORT_ID_AMERICAN_FOOTBALL = 14
 COOLDOWN_S = 2.1  # longest documented endpoint cooldown is 2000ms
+RETRY_BACKOFF_S = (20, 60)  # server errors only; each retry is one more request this month
 
 
 class OddsPapi:
@@ -49,11 +50,18 @@ class OddsPapi:
             time.sleep(wait)
         q = {k: v for k, v in params.items() if v is not None}
         q["apiKey"] = self.key
-        r = self.h.get(path, params=q)
-        self._last = time.monotonic()
-        self.calls += 1
-        if self.tally is not None:
-            self.tally["api_calls"] = self.calls
+        # their 5xx are outages on their side (e.g. a 500 "Authentication error … fetching
+        # user data" while the key is fine): wait and try again, twice at most
+        for backoff in (*RETRY_BACKOFF_S, None):
+            r = self.h.get(path, params=q)
+            self._last = time.monotonic()
+            self.calls += 1
+            if self.tally is not None:
+                self.tally["api_calls"] = self.calls
+            if r.status_code < 500 or backoff is None:
+                break
+            log.warning("OddsPapi %s from %s; retrying in %ss", r.status_code, path, backoff)
+            time.sleep(backoff)
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code} from {path}: {r.text[:4000]}")
         return r.json()

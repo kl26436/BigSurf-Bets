@@ -36,3 +36,28 @@ def test_dataframe_with_late_strings_in_nullable_column():
     df = pl.DataFrame(rows, infer_schema_length=None)
     assert df.schema["prop_type"] == pl.Utf8
     assert df["prop_type"].null_count() == 150
+
+
+def test_get_retries_server_errors_but_not_client_errors(monkeypatch):
+    import httpx
+    import pytest
+
+    from ingest import odds_oddspapi as op
+
+    monkeypatch.setattr(op, "COOLDOWN_S", 0)
+    monkeypatch.setattr(op, "RETRY_BACKOFF_S", (0, 0))
+    replies = {"/tournaments": [500, 200], "/bookmakers": [401], "/markets": [500, 500, 500]}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        code = replies[req.url.path.removeprefix("/v4")].pop(0)
+        return httpx.Response(code, json=[{"ok": 1}] if code == 200 else {"error": "x"})
+
+    api = op.OddsPapi("k")
+    api.h = httpx.Client(base_url=op.BASE, transport=httpx.MockTransport(handler))
+    api.tally = {}
+    assert api.get("/tournaments") == [{"ok": 1}]
+    with pytest.raises(RuntimeError, match="401"):
+        api.get("/bookmakers")                      # a bad key is not retried
+    with pytest.raises(RuntimeError, match="500"):
+        api.get("/markets")                         # gives up after two retries
+    assert api.calls == api.tally["api_calls"] == 6
