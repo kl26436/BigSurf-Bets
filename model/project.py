@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-from . import data, dst, features, kicker, train
+from . import data, dst, features, kicker, train, volume
 from .backtest import PROP_STATS
 from .dist import QUANTILES
 
@@ -47,6 +47,7 @@ class Result:
     n_out: int
     dst_model: dst.DSTModel | None = None
     kicker_model: kicker.KickerModel | None = None
+    lifted: list[dict] = field(default_factory=list)   # backs given vacated carries (model/volume.py)
 
 
 def sleeper_statuses(conn, max_age_hours: int = 48) -> tuple[set[str], set[str]]:
@@ -204,6 +205,8 @@ def run(
     seasons = list(range(first_season, season + 1))
     model, _ = train.fit(df, seasons)
     proj = _tidy(model, train.predict(model, fut))
+    # a team's carries do not vanish with its starter: hand them to the backs who are left
+    proj, lifted = volume.apply(proj, d.stats, season, week)
     dst_df = dst.build(d, upcoming=(season, week))
     dst_model = dst.fit(dst_df, seasons)
     dst_proj = _tidy_dst(dst.predict(dst_model, dst_df.filter(pl.col("is_future"))))
@@ -226,7 +229,7 @@ def run(
         if dropped:
             log.info("%d teams have already played week %s — not re-projected", dropped, week)
         proj = proj.filter(pl.col("team").is_in(list(still)))
-    return Result(season, week, proj, model, len(out_ids or ()), dst_model, k_model)
+    return Result(season, week, proj, model, len(out_ids or ()), dst_model, k_model, lifted)
 
 
 def save_local(res: Result, out_dir: Path | None = None) -> Path:
@@ -257,7 +260,8 @@ def write_db(conn, res: Result, git_sha: str | None = None, inputs_hash: str | N
                 MODEL_VERSION, res.season, res.week, m.seasons, m.n_rows, len(m.features),
                 res.projections.height, res.n_out,
                 _json({**m.oof_metrics, **({"oof_mae_dst_dk": res.dst_model.oof_mae} if res.dst_model else {}),
-                       **({"oof_mae_k_dk": res.kicker_model.oof_mae} if res.kicker_model else {})}), git_sha,
+                       **({"oof_mae_k_dk": res.kicker_model.oof_mae} if res.kicker_model else {}),
+                       **({"vacated_carries": res.lifted} if res.lifted else {})}), git_sha,
                 inputs_hash,
             ),
         ).fetchone()[0]
@@ -266,7 +270,7 @@ def write_db(conn, res: Result, git_sha: str | None = None, inputs_hash: str | N
         )
         log_run.rows = insert_df(conn, "projections", df)
         save_dists(conn, m, run_id)
-        log_run.detail.update(run_id=run_id, season=res.season, week=res.week, ruled_out=res.n_out)
+        log_run.detail.update(run_id=run_id, season=res.season, week=res.week, ruled_out=res.n_out, vacated_carries=len(res.lifted))
         conn.commit()
         return run_id
 

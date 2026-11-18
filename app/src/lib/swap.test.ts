@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applySwap, csvLine, isOut, parseEntriesCsv, planSwap, stackOf, toEntriesCsv } from "./swap";
+import { applySwap, contestRepeats, csvLine, fillContests, isOut, parseEntriesCsv, planSwap, spreadRepeats, stackOf, toEntriesCsv } from "./swap";
 import type { DkEntry, LineupPlayer, PoolPlayer, Pos } from "./types";
 
 const NOW = Date.parse("2026-11-15T19:00:00Z");           // the early games have kicked off
@@ -144,5 +144,41 @@ describe("how a lineup is paired", () => {
     expect(stackOf([p("Jalen Hurts", "QB", "PHI", "DAL"), p("Bijan Robinson", "RB", "ATL", "NO")])).toBe("Hurts, on his own");
     expect(stackOf([p("Bijan Robinson", "RB", "ATL", "NO")])).toBe("");
     expect(stackOf([p("Michael Penix Jr.", "QB", "ATL", "NO"), p("Drake London", "WR", "ATL", "NO")])).toBe("Penix + London");
+  });
+});
+
+describe("the same lineup twice in one contest", () => {
+  const e = (entry_id: string, contest_id: string, lineup_no: number | null, set_id: number | null = 48): DkEntry =>
+    ({ entry_id, slate_id: 1, contest_id, contest_name: contest_id === "A" ? "NFL $500K Play-Action" : "NFL $6K Play-Action", entry_fee: 3, players: null,
+      set_id: lineup_no == null ? null : set_id, lineup_no, imported_at: "2026-11-15T17:14:00Z" });
+  const set48 = Array.from({ length: 10 }, (_, i) => ({ set_id: 48, lineup_no: i + 1, proj: 140 - i }));
+  // week 10 2026: lineups 6, 7 and 8 each on two entries of the big contest, lineups 1, 4 and 5 only in the small one
+  const entries = [e("a1", "A", 2), e("a2", "A", 3), e("a3", "A", 6), e("a4", "A", 6), e("a5", "A", 7), e("a6", "A", 7), e("a7", "A", 8), e("a8", "A", 8),
+    e("b1", "B", 1), e("b2", "B", 4), e("b3", "B", 5)];
+
+  it("finds repeats inside a contest and leaves the same lineup in two contests alone", () => {
+    const r = contestRepeats([...entries, e("b4", "B", 2)]);
+    expect(r).toHaveLength(1);
+    expect(r[0].name).toBe("NFL $500K Play-Action");
+    expect(r[0].repeats).toEqual([{ set_id: 48, lineup_no: 6, entries: ["a3", "a4"] }, { set_id: 48, lineup_no: 7, entries: ["a5", "a6"] }, { set_id: 48, lineup_no: 8, entries: ["a7", "a8"] }]);
+    expect(contestRepeats(entries.filter((x) => x.contest_id === "B"))).toEqual([]);
+  });
+  it("moves each repeat to the best lineup that contest does not have yet", () => {
+    const moves = spreadRepeats(entries, set48);
+    expect(moves).toEqual([{ entry_id: "a4", set_id: 48, lineup_no: 1 }, { entry_id: "a6", set_id: 48, lineup_no: 4 }, { entry_id: "a8", set_id: 48, lineup_no: 5 }]);
+    const after = entries.map((x) => ({ ...x, lineup_no: moves.find((m) => m.entry_id === x.entry_id)?.lineup_no ?? x.lineup_no }));
+    expect(contestRepeats(after)).toEqual([]);
+  });
+  it("moves what it can when the set runs short", () => {
+    const three = set48.slice(0, 3);                                   // lineups 1–3 only: one spare for contest A
+    const moves = spreadRepeats([e("a1", "A", 2), e("a2", "A", 3), e("a3", "A", 3), e("a4", "A", 3)], three);
+    expect(moves).toEqual([{ entry_id: "a3", set_id: 48, lineup_no: 1 }]);
+  });
+  it("fills empty entries contest by contest, reusing a lineup across contests but never inside one", () => {
+    const empty = [e("a1", "A", 1), e("a2", "A", null), e("a3", "A", null), e("b1", "B", null), e("b2", "B", null)];
+    expect(fillContests(empty, 48, set48)).toEqual([
+      { entry_id: "a2", set_id: 48, lineup_no: 2 }, { entry_id: "a3", set_id: 48, lineup_no: 3 },
+      { entry_id: "b1", set_id: 48, lineup_no: 1 }, { entry_id: "b2", set_id: 48, lineup_no: 2 }]);
+    expect(fillContests([e("a1", "A", 1), e("a2", "A", null)], 48, set48.slice(0, 1))).toEqual([]);
   });
 });

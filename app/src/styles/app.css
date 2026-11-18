@@ -164,6 +164,8 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
   font-size: var(--typography-size-xs); font-weight: var(--typography-weight-semibold); background: var(--semantic-bg-cardHi); color: var(--semantic-text-main); white-space: nowrap; }
 .pill--ok { background: var(--semantic-status-successBg); color: var(--semantic-status-success); }
 .pill--warn { background: var(--semantic-status-warningBg); color: var(--semantic-status-warning); }
+.card--warn { background: var(--semantic-status-warningBg); border-color: var(--semantic-status-warning); }
+.card--warn .strong { color: var(--semantic-status-warning); }
 .pill--bad { background: var(--semantic-status-dangerBg); color: var(--semantic-status-danger); }
 .pill--accent { background: var(--semantic-accent-bg); color: var(--semantic-accent-default); }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }

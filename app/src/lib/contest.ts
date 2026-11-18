@@ -96,3 +96,49 @@ export function contestRecord(list: { paid: number | null; won: number | null; p
   const paid = settled.reduce((a, c) => a + (c.paid ?? 0), 0), won = settled.reduce((a, c) => a + (c.won ?? 0), 0);
   return { n: settled.length, open: list.filter((c) => (c.n_mine ?? 0) > 0).length - settled.length, paid, won, profit: won - paid, roi: paid > 0 ? (won - paid) / paid : null };
 }
+
+// ---- DraftKings entry history (My Contests → History → Download) -----------------
+// One row per entry you have ever played: Entry_Key, Contest_Key, Place, Points,
+// Winnings_Non_Ticket, Winnings_Ticket, Entry_Fee, Places_Paid, Contest_Entries, …
+// It carries the dollars the results file lacks.
+export interface HistoryRow { entry_id: string; contest_key: string; entry_fee: number | null; won: number; places_paid: number | null; place: number | null; contest: string | null }
+
+/** True when the file looks like DraftKings' entry history rather than a contest's results. */
+export function isEntryHistory(text: string): boolean {
+  const head = norm(text.replace(/^﻿/, "").split(/\r?\n/, 1)[0] ?? "");
+  return head.includes("entrykey") && head.includes("contestkey") && head.includes("winnings");
+}
+
+export function parseEntryHistoryCsv(text: string): { rows: HistoryRow[]; problem?: string } {
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length === 0 || !isEntryHistory(lines[0])) return { rows: [], problem: "That isn't DraftKings' entry history: it has no Entry_Key, Contest_Key and Winnings columns." };
+  const head = csvLine(lines[0]).map(norm);
+  const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
+  const cEntry = col("entrykey"), cContest = col("contestkey"), cFee = col("entryfee"), cCash = col("winningsnonticket", "winnings"),
+    cTicket = col("winningsticket"), cPaid = col("placespaid"), cPlace = col("place"), cName = col("entry");
+  const rows: HistoryRow[] = [];
+  for (const l of lines.slice(1)) {
+    const r = csvLine(l);
+    const id = r[cEntry] ?? "", key = r[cContest] ?? "";
+    if (!/^\d+$/.test(id) || !/^\d+$/.test(key)) continue;
+    rows.push({ entry_id: id, contest_key: key, entry_fee: number(r[cFee]), won: (number(r[cCash]) ?? 0) + (cTicket >= 0 ? number(r[cTicket]) ?? 0 : 0),
+      places_paid: cPaid >= 0 ? number(r[cPaid]) : null, place: cPlace >= 0 ? number(r[cPlace]) : null, contest: cName >= 0 ? r[cName] || null : null });
+  }
+  if (rows.length === 0) return { rows, problem: "No entries in that history file." };
+  return { rows };
+}
+
+/** History rows → the dollars for each contest you have on file (matched by contest key, then entry id). */
+export function moneyFromHistory(rows: HistoryRow[], contests: { id: number; contest_key: string; name: string | null; entry_fee: number | null }[],
+  entries: { contest_id: number; entry_id: string }[]): { contest_id: number; entry_fee: number | null; name: string | null; winnings: Record<string, number> }[] {
+  const out = [];
+  for (const c of contests) {
+    const mine = entries.filter((e) => e.contest_id === c.id);
+    const hist = rows.filter((r) => r.contest_key === c.contest_key || mine.some((e) => e.entry_id === r.entry_id));
+    const winnings: Record<string, number> = {};
+    for (const e of mine) { const h = hist.find((r) => r.entry_id === e.entry_id); if (h) winnings[e.entry_id] = h.won; }
+    if (Object.keys(winnings).length === 0) continue;
+    out.push({ contest_id: c.id, entry_fee: c.entry_fee ?? hist[0]?.entry_fee ?? null, name: c.name ?? hist[0]?.contest ?? null, winnings });
+  }
+  return out;
+}

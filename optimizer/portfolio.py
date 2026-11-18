@@ -13,7 +13,12 @@ Two modes:
   cash  (50/50s, head-to-heads): favour the highest expected score; light randomness.
   gpp   (tournaments): stack the QB with a pass catcher, optimise against
         simulated outcomes, and pick each next lineup for what it adds to the
-        set's best-case score — lineups that win in worlds the others don't."""
+        set's best-case score — lineups that win in worlds the others don't.
+        With `vs_field` on (the default) each candidate is instead valued by what
+        it would win against a sampled field of opponents (ownership.py): a
+        score only pays when it beats the scores the field put up that Sunday,
+        so a lineup of everybody's players is worth less than its projection
+        says, and skipping a player half the field holds costs what it should."""
 
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import polars as pl
 
+from . import ownership
 from .classic import SLOTS, Rules, Solver, assign_slots
 from .sim import simulate
 
@@ -38,6 +44,8 @@ class Settings:
     n_sims: int = 10_000
     seed: int = 7
     rules: Rules | None = None       # default: by mode
+    vs_field: bool = True            # gpp: value lineups by what they win against a sampled field
+    field_size: int = 5000           # opponents' lineups sampled
 
     def resolved_rules(self) -> Rules:
         if self.rules:
@@ -52,6 +60,25 @@ class Portfolio:
     lineups: list[np.ndarray]              # player indices per lineup
     totals: np.ndarray                     # (n_sims, n_lineups) simulated lineup scores
     notes: list[str] = field(default_factory=list)
+    own: np.ndarray | None = None          # projected share of the field's lineups per player (pool order)
+    lines: np.ndarray | None = None        # (n_sims, tiers) score needed for each payout tier
+    coef: ownership.Coef | None = None
+
+    def field_view(self) -> dict:
+        """How the set stands against the sampled field: {} when it was built without one."""
+        if self.own is None or self.lines is None or not self.lineups:
+            return {}
+        pay = np.column_stack([ownership.payouts(self.totals[:, k], self.lines) for k in range(len(self.lineups))])
+        cash = self.totals >= self.lines[:, [0]]
+        top = self.totals >= self.lines[:, [2]]
+        return dict(
+            exp_return=round(float(pay.mean()), 3),                    # expected winnings per entry, in entry fees
+            cash_rate=round(float(cash.mean()), 3),                    # share of entries × Sundays that cash
+            lineups_cashing=round(float(cash.sum(1).mean()), 2),       # entries in the money on an average Sunday
+            top_rate=round(float(top.mean()), 4),                      # … that reach the top 2.5%
+            avg_ownership=round(float(np.mean([self.own[i].sum() for i in self.lineups]) * 100), 1),  # summed field % per lineup
+            field_slates=self.coef.n_slates if self.coef else 0,
+        )
 
     def summary(self) -> pl.DataFrame:
         sal, mean = self.pool["salary"].to_numpy(), self.pool["dk_mean"].to_numpy()
@@ -102,7 +129,16 @@ class Portfolio:
         return "\n".join(lines) + "\n"
 
 
-def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | None = None) -> Portfolio:
+# With a field to measure against, candidates stay closer to the projection (a lineup far
+# from the best one almost never pays: on the week-10 2026 slate one projected point was
+# worth about forty points of summed ownership) and lean away from the field's favourite
+# players a little, in turn: score × (1 − lean × ownership). Selection decides which wins.
+LEANS = (0.0, 0.1, 0.2)
+FIELD_LAM = 0.25
+
+
+def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | None = None,
+          coef: ownership.Coef | None = None) -> Portfolio:
     s = settings or Settings()
     rng = np.random.default_rng(s.seed)
     sims = simulate(pool, corr, s.n_sims, s.seed)
@@ -112,6 +148,16 @@ def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | Non
     cap = max(1, math.floor(s.max_exposure * s.n + 1e-9))
     # how far each candidate's objective leans on one simulated outcome vs the mean
     lam = 0.3 if s.mode == "gpp" else 0.12
+    own = lines = None
+    if s.mode == "gpp" and s.vs_field:
+        coef = coef or ownership.DEFAULT
+        own = ownership.project(pool, coef)
+        opp = ownership.sample_field(pool, own, s.field_size, s.seed + 4)
+        if opp.shape[0] >= 200:
+            lines = ownership.field_lines(sims, opp)
+            lam = FIELD_LAM
+        else:
+            own = None
     floor = -np.inf
     chosen: list[np.ndarray] = []
     counts = np.zeros(pool.height, int)
@@ -123,6 +169,8 @@ def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | Non
         cands: dict[tuple, np.ndarray] = {}
         for c in range(s.candidates):
             scores = mean if (c == 0) else (1 - lam) * mean + lam * sims[rng.integers(s.n_sims)]
+            if lines is not None and c > 0:
+                scores = scores * (1 - LEANS[c % len(LEANS)] * own)
             idx = solver.solve(scores, banned, chosen, s.min_unique)
             if idx is not None:
                 cands[tuple(idx)] = idx
@@ -135,7 +183,9 @@ def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | Non
         if s.mode == "gpp":  # upside is only worth having on a lineup that is still good on average
             ok = {key: t for key, t in totals.items() if t.mean() >= floor}
             totals = ok or {max(totals, key=lambda key: totals[key].mean()): max(totals.values(), key=lambda t: t.mean())}
-        if s.mode == "cash" or not chosen:
+        if lines is not None:      # expected winnings against the field, entry by entry
+            pick = max(totals, key=lambda key: (float(ownership.payouts(totals[key], lines).mean()), totals[key].mean()))
+        elif s.mode == "cash" or not chosen:
             pick = max(totals, key=lambda key: totals[key].mean())
         else:  # what does this lineup add to the set's best score, averaged over simulated Sundays?
             pick = max(totals, key=lambda key: np.maximum(best_so_far, totals[key]).mean())
@@ -144,4 +194,4 @@ def build(pool: pl.DataFrame, settings: Settings | None = None, corr: dict | Non
         best_so_far = np.maximum(best_so_far, totals[pick])
 
     t = np.column_stack([sims[:, idx].sum(1) for idx in chosen]) if chosen else np.empty((s.n_sims, 0))
-    return Portfolio(pool, s, chosen, t, notes)
+    return Portfolio(pool, s, chosen, t, notes, own, lines, coef if lines is not None else None)

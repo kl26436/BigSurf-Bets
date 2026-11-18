@@ -5,6 +5,7 @@ import { useBets, useEntries, useEvents, useGames, useHealth, useJobs, usePool, 
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
 import { visibleSets } from "../lib/lineup";
 import { useTitle } from "../lib/nav";
+import { anyMoved, movedLine, useMoved } from "../lib/moved";
 import { useScratches } from "../lib/scratches";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
@@ -45,6 +46,7 @@ export function Week() {
   const settings = useSettings();
   const bets = useBets();
   const scratches = useScratches(slate, sets.data ?? []);
+  const moved = useMoved(slate, sets.data ?? []);
   const events = useEvents();
   const [allEvents, setAllEvents] = useState(false);
   useTitle("This week");
@@ -64,6 +66,7 @@ export function Week() {
     staleFeeds: old.map((f) => f.label.toLowerCase()),
     sets: shown ? shown.auto.length + shown.mine.length : 0,
     setsOnOldNumbers: shown ? shown.mine.filter((x) => !x.on_latest_projections).length : 0,
+    movedSinceEntered: moved && anyMoved(moved) ? movedLine(moved) : "",
     enteredLineups: scratches?.entered ?? 0,
     entries: entries.data?.length ?? 0,
     scratched: scratches?.hit ?? 0, scratchedNames: scratches?.names ?? [],

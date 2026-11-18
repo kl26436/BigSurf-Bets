@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useAssignEntries, useEntries, useImportEntries, useSetsDetail } from "../lib/api";
 import { ago, pts, usd } from "../lib/format";
 import { useStore } from "../lib/store";
-import { parseEntriesCsv, toEntriesCsv } from "../lib/swap";
+import { contestRepeats, fillContests, parseEntriesCsv, spreadRepeats, toEntriesCsv } from "../lib/swap";
 import type { DkEntry, LineupSet, Slate } from "../lib/types";
 import { download } from "../screens/Builder";
 import { setName } from "../screens/Lineups";
@@ -43,11 +43,20 @@ export function Entries({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
     assign.mutate({ assignments: [value ? { entry_id: e.entry_id, set_id: s, lineup_no: l } : { entry_id: e.entry_id, set_id: null }] },
       { onError: (err) => say(`Couldn't save that — ${err.message}`, true) });
   }
+  const repeats = useMemo(() => contestRepeats(list), [list]);
+  const wasted = repeats.reduce((a, c) => a + c.repeats.reduce((b, r) => b + r.entries.length - 1, 0), 0);
+  function spread() {
+    const moves = spreadRepeats(list, lineups);
+    if (moves.length === 0) return say("No unused lineup left in that set to move them to", true);
+    assign.mutate({ assignments: moves }, {
+      onSuccess: () => say(`${moves.length} ${moves.length === 1 ? "entry" : "entries"} moved to a lineup of their own · download the edit file and upload it to DraftKings`),
+      onError: (err) => say(`Couldn't move them — ${err.message}`, true),
+    });
+  }
   function fill() {
+    if (fillFrom === "") return;
     const empty = list.filter((e) => e.set_id == null);
-    const taken = new Set(list.filter((e) => e.set_id === fillFrom).map((e) => e.lineup_no));
-    const free = lineups.filter((l) => l.set_id === fillFrom && !taken.has(l.lineup_no)).sort((a, b) => (b.proj ?? 0) - (a.proj ?? 0));
-    const pairs = empty.slice(0, free.length).map((e, i) => ({ entry_id: e.entry_id, set_id: free[i].set_id, lineup_no: free[i].lineup_no }));
+    const pairs = fillContests(list, fillFrom, lineups);
     if (pairs.length === 0) return say("That set has no lineup left to give", true);
     assign.mutate({ assignments: pairs }, {
       onSuccess: () => say(`${pairs.length} ${pairs.length === 1 ? "entry" : "entries"} filled${pairs.length < empty.length ? ` · ${empty.length - pairs.length} still empty` : ""}`),
@@ -57,7 +66,7 @@ export function Entries({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
   const editFile = () => {
     const { csv, rows } = toEntriesCsv(list, (e) => (e.set_id != null && e.lineup_no != null ? idsOf(e.set_id, e.lineup_no) : null));
     download(`bigsurf-edit-entries-week${slate.week}.csv`, csv);
-    say(`${rows} ${rows === 1 ? "entry" : "entries"} in the file`);
+    say(`${rows} ${rows === 1 ? "entry" : "entries"} in the file${wasted ? ` · ${wasted} still repeat a lineup in the same contest` : ""}`, wasted > 0);
   };
 
   const held = list.filter((e) => e.set_id != null).length;
@@ -81,6 +90,16 @@ export function Entries({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
             <span className="small muted">Read {ago(list[0].imported_at)}</span>
           </div>
           <p className="small">{held} of {list.length} hold one of your lineups.{held < list.length ? " The rest are left out of the edit file." : ""}</p>
+          {wasted > 0 && (
+            <div className="card card--pad card--warn" role="alert">
+              <p className="strong">{wasted} {wasted === 1 ? "entry repeats" : "entries repeat"} a lineup in the same contest</p>
+              {repeats.map((c) => (
+                <p key={c.contest} className="small">{c.name ?? "Contest"}: {c.repeats.map((r) => `lineup ${r.lineup_no} ×${r.entries.length}`).join(", ")}</p>
+              ))}
+              <p className="small muted">A repeat can only tie itself, and the lineup it replaced never plays. Spread them out, then download the edit file and upload it on DraftKings before lock.</p>
+              {slate.upcoming && <button className="btn btn--primary" disabled={assign.isPending || many.isLoading} onClick={spread}>Spread them out</button>}
+            </div>
+          )}
           {contests.map((group) => (
             <div key={group[0].contest_id ?? group[0].contest_name} className="stack stack--tight">
               <p className="small strong">{group[0].contest_name ?? "Contest"}{group[0].entry_fee != null ? ` · ${usd(group[0].entry_fee)}` : ""}</p>

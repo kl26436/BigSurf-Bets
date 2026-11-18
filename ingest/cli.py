@@ -470,6 +470,7 @@ def lineups_build(
     if mode not in ("gpp", "cash"):
         raise typer.BadParameter("mode must be gpp or cash")
     info: dict = {}
+    coef = None
     if csv:
         if not projections:
             raise typer.BadParameter("--csv needs --projections")
@@ -481,6 +482,9 @@ def lineups_build(
                 typer.echo(f"no upcoming DraftKings {slate_type} slate in bsb.dfs_slates — upload a salary export to slates/")
                 raise typer.Exit(0)
             pool, info = slate.from_db(conn, slate_id)
+            if mode == "gpp" and info.get("slate_type") != "showdown":
+                from optimizer import ownership
+                coef = ownership.fit_from_db(conn)   # how the field picks, from the contest results on file
             if if_stale and write:
                 from optimizer.jobs import auto_set_is_current
                 if auto_set_is_current(conn, slate_id, mode, info.get("run_id")):
@@ -509,7 +513,7 @@ def lineups_build(
     else:
         base = st.resolved_rules()
         st.rules = Rules(**{**base.__dict__, "lock": ids(lock), "exclude": ids(exclude)})
-        pf = portfolio.build(pool, st)
+        pf = portfolio.build(pool, st, coef=coef)
     if not pf.lineups:
         typer.echo("no legal lineup could be built: " + "; ".join(pf.notes))
         raise typer.Exit(1)
@@ -524,6 +528,11 @@ def lineups_build(
                f"max exposure {sm['max_exposure_pct']:.0f}% · avg projection {sm['avg_proj']}")
     typer.echo(f"set's best lineup per simulated slate: mean {sm['set_best_mean']}, top-10% {sm['set_best_p90']} "
                f"(single best lineup averages {sm['best_lineup_mean']})")
+    if sm.get("field"):
+        f = sm["field"]
+        typer.echo(f"against a sampled field: {f['lineups_cashing']} of {len(pf.lineups)} in the money on an average slate, "
+                   f"{f['exp_return']} entry fees back per entry (top 0.1% and above not counted), "
+                   f"summed field ownership {f['avg_ownership']}% per lineup")
     for note in pf.notes:
         typer.echo(f"note: {note}")
     rows, summ = pf.rows(), {r["lineup"]: r for r in pf.summary().iter_rows(named=True)}

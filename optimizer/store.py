@@ -26,6 +26,7 @@ def set_summary(pf: Portfolio) -> dict:
         best_lineup_mean=round(float(pf.totals.mean(0).max()), 2),
         set_best_mean=round(float(best.mean()), 2),      # average top score across the set, per simulated slate
         set_best_p90=round(float(np.quantile(best, 0.9)), 1),
+        **({"field": fv} if (fv := pf.field_view() if hasattr(pf, "field_view") else {}) else {}),
     )
 
 

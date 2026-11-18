@@ -21,6 +21,8 @@ export interface WeekFacts {
   sets: number;
   /** sets of yours built before the numbers last changed */
   setsOnOldNumbers: number;
+  /** what changed for lineups already entered on older numbers, in a line ("" when nothing material) */
+  movedSinceEntered?: string;
   enteredLineups: number;
   entries: number;
   /** entered lineups with a player ruled out, and who */
@@ -47,6 +49,8 @@ export function weekSteps(f: WeekFacts): Step[] {
 
   steps.push(f.sets === 0
     ? { key: "lineups", title: "Build lineups", detail: "No lineup sets yet for these games.", state: live ? "todo" : "later", to: "/lineups", action: "Build" }
+    : f.movedSinceEntered && live && f.enteredLineups > 0
+      ? { key: "lineups", title: "The numbers moved after you entered", detail: f.movedSinceEntered, state: "alert", to: "/lineups", action: "Open" }
     : f.setsOnOldNumbers > 0 && live && f.enteredLineups === 0
       ? { key: "lineups", title: "Rebuild on the latest numbers", detail: `${n(f.setsOnOldNumbers, "set")} of yours ${f.setsOnOldNumbers === 1 ? "was" : "were"} built before the numbers changed.`, state: "todo", to: "/lineups", action: "Open" }
       : { key: "lineups", title: "Lineups built", detail: `${n(f.sets, "set")} ready.${f.setsOnOldNumbers > 0 && live ? ` ${f.setsOnOldNumbers === 1 ? "One was" : `${f.setsOnOldNumbers} were`} built before the numbers changed.` : ""}`, state: "done", to: "/lineups", action: "Open" });

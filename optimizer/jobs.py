@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import portfolio, showdown, slate, store
+from . import ownership, portfolio, showdown, slate, store
 from .classic import Rules
 
 
@@ -93,7 +93,7 @@ def build_lineups(conn, job_id: int, payload: dict[str, Any]) -> dict:
     if "min_salary" in payload:
         over["min_salary"] = int(_num(payload, "min_salary", 48_500, 0, 50_000))
     st.rules = Rules(**{**st.resolved_rules().__dict__, **over, "lock": lock & known, "exclude": exclude & known})
-    pf = portfolio.build(pool, st)
+    pf = portfolio.build(pool, st, coef=ownership.fit_from_db(conn) if mode == "gpp" else None)
     if not pf.lineups:
         raise JobError("no legal lineup under these rules: " + "; ".join(pf.notes or ["locks and limits conflict"]))
     if gone:
