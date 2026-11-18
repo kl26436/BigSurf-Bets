@@ -71,3 +71,19 @@ def test_projections_without_the_columns_pass_through():
     dst = pl.DataFrame({"player_id": ["DST_KC"], "team": ["KC"], "dk_mean": [7.0]})
     out, changed = volume.apply(dst, STATS, 2026, 7)
     assert out.equals(dst) and changed == []
+
+
+def test_a_run_with_lifted_backs_can_be_recorded():
+    """The run's metrics are stored as JSON: numbers rounded, the list of lifted backs kept whole.
+    (The first live run after this shipped failed here: every value was passed through float().)"""
+    import json
+
+    import numpy as np
+
+    from model import project
+
+    proj = _proj([("johnson", "RB", "KC", 12.3, 11.92)])
+    _, changed = volume.apply(proj, STATS, 2026, 7)
+    out = json.loads(project._json({"oof_mae_dk": np.float64(5.123456), "n": 3, "vacated_carries": changed}))
+    assert out["oof_mae_dk"] == 5.1235 and out["n"] == 3.0
+    assert out["vacated_carries"][0]["player"] == "johnson" and out["vacated_carries"][0]["dk_before"] == 11.92
