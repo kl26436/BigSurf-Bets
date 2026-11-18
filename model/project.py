@@ -324,7 +324,8 @@ def latest_fingerprint(conn) -> str | None:
 def _json(d: dict) -> str:
     import json
 
-    return json.dumps({k: round(float(v), 4) for k, v in d.items()})
+    # numbers are rounded; anything else (the list of backs given vacated carries) is kept as it is
+    return json.dumps({k: v if isinstance(v, list | dict | str) or v is None else round(float(v), 4) for k, v in d.items()})
 
 
 def price(player: str, stat: str, line: float, out_dir: Path | None = None) -> list[dict]:
