@@ -106,3 +106,28 @@ def test_one_quarterback_per_team_in_upcoming_rows():
     # A: the named starter wins even though the backup threw more last week; B: named QB is unavailable → most recent volume
     assert sorted(rows["player_id"].to_list()) == ["old", "starter", "wr"]
     assert dict(zip(starters["team"], starters["_starter"], strict=True)) == {"A": "starter", "B": "old"}
+
+
+def test_sleeper_lineup_for_the_coming_week_comes_from_matchups(monkeypatch):
+    """Sleeper's rosters endpoint keeps last week's lineup until the new week is scored; a
+    swap made days ahead only shows in /matchups/{week}. (Nov 17 2026: D'Andre Swift had been
+    started for week 11 for days and the app still showed him on the bench.)"""
+    from ingest import sleeper_league as sl
+
+    calls = []
+
+    def fake(path):
+        calls.append(path)
+        return [{"roster_id": 6, "starters": ["11566", "6790", "0"], "players": ["11566", "6790", "8132"]},
+                {"roster_id": 7, "starters": None}, {"roster_id": None, "starters": ["1"]}]
+
+    monkeypatch.setattr(sl, "_get", fake)
+    assert sl.week_starters("L1", 11) == {6: ["11566", "6790", "0"]}
+    assert calls == ["/league/L1/matchups/11"]
+    assert sl.week_starters("L1", 0) == {}
+
+    def down(path):
+        raise sl.httpx.ConnectError("no route")
+
+    monkeypatch.setattr(sl, "_get", down)
+    assert sl.week_starters("L1", 11) == {}          # falls back to the roster's own lineup

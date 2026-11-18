@@ -9,6 +9,7 @@ import { DEFAULT_MIN_SPEND, DEFAULT_PER_TEAM, buildCards, describeSettings, isSh
 import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
+import { anyMoved, useMoved } from "../lib/moved";
 import { useScratches } from "../lib/scratches";
 import type { LineupSet, Slate } from "../lib/types";
 
@@ -84,6 +85,22 @@ function ScratchAlert({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
   );
 }
 
+/** Entered lineups built before the numbers last changed: who moved, and who is missing. */
+function MovedAlert({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
+  const m = useMoved(slate, sets);
+  if (!m || !anyMoved(m)) return null;
+  const f = (x: number) => x.toFixed(1);
+  const n = (k: number) => `${k} ${k === 1 ? "lineup" : "lineups"}`;
+  return (
+    <div className="card card--pad card--warn" role="alert">
+      <p className="strong">The numbers moved after you entered</p>
+      {[...m.down, ...m.up].slice(0, 5).map((x) => <p key={x.dk_id} className="small num">{x.name}: {f(x.from)} → {f(x.to)} expected, in {n(x.lineups)}</p>)}
+      {m.missing.map((x) => <p key={x.dk_id} className="small num">{x.name} ({x.pos}, ${x.salary.toLocaleString()}) is now one of the best values at {f(x.mean)} expected and is in none of your entered lineups</p>)}
+      <p className="small muted">Entered lineups don't change on their own. Rebuild the set, put the new lineups on your entries below, and upload the edit file before the games lock.</p>
+    </div>
+  );
+}
+
 export function Lineups() {
   const { slate, isLoading } = useCurrentSlate();
   const sets = useSets(slate?.id);
@@ -117,6 +134,7 @@ export function Lineups() {
       </div>
       {single && slate.upcoming && <p className="small muted">Six players from one game. The captain costs 1.5 times his salary and scores 1.5 times his points. Building by hand, swaps and the entries file aren't available for this format yet.</p>}
       {!single && <ScratchAlert slate={slate} sets={all} />}
+      {!single && <MovedAlert slate={slate} sets={all} />}
       {slate.upcoming && requests.map((c) => <RequestCard key={c.job.id} card={c} />)}
       <section className="stack stack--tight" aria-label="Automatic sets">
         <p className="eyebrow">Rebuilt whenever the numbers change</p>

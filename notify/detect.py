@@ -17,6 +17,10 @@ STATUS_WORDS = {
 # a status change or a points move is only worth a line for players who matter on the slate
 MIN_POINTS_FOR_FEED = 8.0
 POINTS_MOVE = 3.0
+# … and worth a pop-up once lineups are entered: a riser you hold in none of them, at a
+# number that plays (week 10 2026: a backup went 6.5 → 11.4 on Saturday when the starter was
+# ruled out, was in 56% of the field's lineups on Sunday, and in none of ours)
+RISER_MIN_POINTS = 10.0
 # the "no expected points" rule only means "ruled out" when the week has projections at all
 MIN_POOL_COVERAGE = 0.4
 
@@ -154,26 +158,43 @@ def points_moves(conn: psycopg.Connection) -> list[Event]:
             join (select distinct season, week from bsb.dfs_slates where starts_at > now()) w on w.season = r.season and w.week = r.week
             where r.sport = 'nfl'
         )
-        select a.run_id, p.player_id, p.name, p.team, p.slate_id, b.dk_mean::float8 as before, a.dk_mean::float8 as after
+        select a.run_id, p.player_id, p.name, p.team, p.slate_id, b.dk_mean::float8 as before, a.dk_mean::float8 as after,
+               mine.entered, mine.held
         from runs ra join runs rb on rb.season = ra.season and rb.week = ra.week and ra.rn = 1 and rb.rn = 2
         join bsb.projections a on a.run_id = ra.id
         join bsb.projections b on b.run_id = rb.id and b.player_id = a.player_id
         join lateral (
-            select p.player_id, p.name, p.team, p.slate_id from public.app_pool p
+            select p.player_id, p.name, p.team, p.slate_id, p.dk_id, p.kickoff_at from public.app_pool p
             join bsb.dfs_slates sl on sl.id = p.slate_id and sl.starts_at > now() and sl.season = ra.season and sl.week = ra.week
             where p.player_id = a.player_id order by p.slate_id desc limit 1
         ) p on true
+        cross join lateral (
+            select count(*) as entered,
+                   count(*) filter (where exists (select 1 from bsb.lineup_players lp
+                                                  where lp.set_id = l.set_id and lp.lineup_no = l.lineup_no and lp.site_player_id = p.dk_id)) as held
+            from bsb.lineups l join bsb.lineup_sets ls on ls.id = l.set_id and ls.archived_at is null and ls.slate_id = p.slate_id
+            where l.entered
+        ) mine
         where abs(a.dk_mean - b.dk_mean) >= %s and greatest(a.dk_mean, b.dk_mean) >= %s
         """,
         (POINTS_MOVE, MIN_POINTS_FOR_FEED),
     ).fetchall()
-    return [
-        Event(kind="points", dedupe_key=f"points:{run_id}:{player_id}", slate_id=slate_id, player_id=player_id, url="/players",
-              title=f"{name}: {before:.1f} → {after:.1f} expected",
-              body=f"{team + '. ' if team else ''}{'Up' if after > before else 'Down'} {abs(after - before):.1f} since the last run.",
-              data={"before": before, "after": after})
-        for run_id, player_id, name, team, slate_id, before, after in rows
-    ]
+    out = []
+    for run_id, player_id, name, team, slate_id, before, after, entered, held in rows:
+        body = f"{team + '. ' if team else ''}{'Up' if after > before else 'Down'} {abs(after - before):.1f} since the last run."
+        missed = entered > 0 and held == 0 and after > before and after >= RISER_MIN_POINTS
+        dropped = held > 0 and after < before
+        if missed:
+            body += f" He is in none of your {_plural(entered, 'entered lineup')}."
+        elif held > 0:
+            body += f" He is in {_plural(held, 'entered lineup')}."
+        out.append(Event(
+            kind="points", dedupe_key=f"points:{run_id}:{player_id}", slate_id=slate_id, player_id=player_id,
+            url="/lineups" if (missed or dropped) else "/players", severity="alert" if (missed or dropped) else "info",
+            notify=missed or dropped, title=f"{name}: {before:.1f} → {after:.1f} expected", body=body,
+            data={"before": before, "after": after, "entered": entered, "held": held},
+        ))
+    return out
 
 
 def find_events(conn: psycopg.Connection) -> list[Event]:

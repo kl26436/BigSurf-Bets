@@ -54,6 +54,26 @@ def transactions(league_id: str, week: int) -> list[dict]:
     return _get(f"/league/{league_id}/transactions/{week}")
 
 
+def week_starters(league_id: str, week: int) -> dict[int, list[str]]:
+    """Each roster's lineup for `week`, from the matchups endpoint.
+
+    The rosters endpoint carries the lineup of the league's current scoring
+    week (Sleeper's `leg`), which only moves on once that week is scored. A
+    lineup set for the coming week lives in /matchups/{week} until then, so
+    a swap made days ahead never shows up in /rosters. Empty when Sleeper has
+    no matchups for that week (bye, offseason, eliminated teams)."""
+    if week <= 0:
+        return {}
+    try:
+        rows = matchups(league_id, week) or []
+    except httpx.HTTPError as e:
+        log.warning("sleeper matchups week %s: %s", week, e)
+        return {}
+    # Keep the list as Sleeper sends it: starters are by slot, and "0" marks an empty slot.
+    return {int(m["roster_id"]): list(m["starters"])
+            for m in rows if m.get("roster_id") is not None and m.get("starters")}
+
+
 def _ts(ms) -> datetime | None:
     return datetime.fromtimestamp(ms / 1000, UTC) if ms else None
 
@@ -177,6 +197,7 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
         me = user_id(my_username) if my_username else None
         owners = {u["user_id"]: u.get("display_name") for u in users(league_id)}
         now = datetime.now(UTC)
+        lineups = week_starters(league_id, week)
         rows = []
         for r in rosters(league_id):
             s = r.get("settings") or {}
@@ -189,7 +210,8 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
                     "owner_user_id": r.get("owner_id"),
                     "owner_name": owners.get(r.get("owner_id")),
                     "is_me": r.get("owner_id") == me,
-                    "starters": r.get("starters") or [],
+                    # The coming week's lineup (matchups) wins over the roster's, which is last week's.
+                    "starters": lineups.get(int(r["roster_id"])) or r.get("starters") or [],
                     "players": r.get("players") or [],
                     "reserve": r.get("reserve") or [],
                     "wins": s.get("wins"),
@@ -206,6 +228,7 @@ def snapshot_league(conn: psycopg.Connection, league_id: str, my_username: str |
         txs, tx_changed = snapshot_transactions(conn, league_id, week)
         changed = moved or tx_changed > 0
         run.detail.update(league=lg.get("name"), week=week, rosters=len(rows), transactions=txs,
-                          new_transactions=tx_changed, changed=changed)
+                          new_transactions=tx_changed, changed=changed,
+                          lineups_from_matchups=len(lineups))
         conn.commit()
         return changed

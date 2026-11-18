@@ -189,3 +189,67 @@ export function toEntriesCsv(entries: DkEntry[], lineupIds: (e: DkEntry) => stri
   }
   return { csv: lines.join("\n") + "\n", rows: lines.length - 1 };
 }
+
+// ---- the same lineup twice in one contest ------------------------------------------
+export interface ContestRepeat { contest: string; name: string | null; repeats: { set_id: number; lineup_no: number; entries: string[] }[] }
+
+const contestKey = (e: Pick<DkEntry, "contest_id" | "contest_name">) => e.contest_id ?? e.contest_name ?? "?";
+
+/** Contests where one of your lineups sits on more than one entry. In a contest a
+ *  repeat is a wasted entry: it can only tie itself, and the lineup it pushed out
+ *  never plays. Across contests the same lineup is fine. */
+export function contestRepeats(entries: DkEntry[]): ContestRepeat[] {
+  const by = new Map<string, DkEntry[]>();
+  for (const e of entries) by.set(contestKey(e), [...(by.get(contestKey(e)) ?? []), e]);
+  const out: ContestRepeat[] = [];
+  for (const [contest, list] of by) {
+    const held = new Map<string, DkEntry[]>();
+    for (const e of list) {
+      if (e.set_id == null || e.lineup_no == null) continue;
+      const k = `${e.set_id}:${e.lineup_no}`;
+      held.set(k, [...(held.get(k) ?? []), e]);
+    }
+    const repeats = [...held.values()].filter((g) => g.length > 1)
+      .map((g) => ({ set_id: g[0].set_id!, lineup_no: g[0].lineup_no!, entries: g.map((e) => e.entry_id) }))
+      .sort((a, b) => a.lineup_no - b.lineup_no);
+    if (repeats.length) out.push({ contest, name: list[0].contest_name, repeats });
+  }
+  return out;
+}
+
+/** New homes for repeated entries: every entry after the first holding a lineup in a
+ *  contest moves to a lineup of the same set that isn't in that contest yet, highest
+ *  expected first. Entries left over when the set runs out stay as they are. */
+export function spreadRepeats(entries: DkEntry[], lineups: { set_id: number; lineup_no: number; proj: number | null }[]):
+  { entry_id: string; set_id: number; lineup_no: number }[] {
+  const moves: { entry_id: string; set_id: number; lineup_no: number }[] = [];
+  for (const c of contestRepeats(entries)) {
+    const inContest = entries.filter((e) => contestKey(e) === c.contest && e.set_id != null);
+    for (const r of c.repeats) {
+      const used = new Set(inContest.filter((e) => e.set_id === r.set_id).map((e) => e.lineup_no));
+      for (const m of moves) if (m.set_id === r.set_id && inContest.some((e) => e.entry_id === m.entry_id)) used.add(m.lineup_no);
+      const free = lineups.filter((l) => l.set_id === r.set_id && !used.has(l.lineup_no)).sort((a, b) => (b.proj ?? 0) - (a.proj ?? 0) || a.lineup_no - b.lineup_no);
+      for (const entry of r.entries.slice(1)) {
+        const next = free.shift();
+        if (!next) break;
+        moves.push({ entry_id: entry, set_id: next.set_id, lineup_no: next.lineup_no });
+      }
+    }
+  }
+  return moves;
+}
+
+/** Fill a contest's empty entries from a set: lineups already in that contest are
+ *  skipped, lineups used in other contests are not (they may repeat across contests). */
+export function fillContests(entries: DkEntry[], setId: number, lineups: { set_id: number; lineup_no: number; proj: number | null }[]):
+  { entry_id: string; set_id: number; lineup_no: number }[] {
+  const pairs: { entry_id: string; set_id: number; lineup_no: number }[] = [];
+  const contests = [...new Set(entries.map(contestKey))];
+  for (const c of contests) {
+    const list = entries.filter((e) => contestKey(e) === c);
+    const taken = new Set(list.filter((e) => e.set_id === setId).map((e) => e.lineup_no));
+    const free = lineups.filter((l) => l.set_id === setId && !taken.has(l.lineup_no)).sort((a, b) => (b.proj ?? 0) - (a.proj ?? 0) || a.lineup_no - b.lineup_no);
+    list.filter((e) => e.set_id == null).forEach((e, i) => { if (free[i]) pairs.push({ entry_id: e.entry_id, set_id: setId, lineup_no: free[i].lineup_no }); });
+  }
+  return pairs;
+}

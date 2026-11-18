@@ -1115,14 +1115,29 @@ def test_status_changes_and_points_moves_fill_the_what_changed_list(db_url):
             assert events[f"status:{mine[0]}"].title == f"{mine[1]} is questionable" and events[f"status:{mine[0]}"].notify is True
             assert "lineup you entered" in events[f"status:{mine[0]}"].body
             assert events[f"status:{star[0]}"].notify is False                                          # listed, not sent: he is not in a lineup
-            assert "→" in events[f"points:{star[0]}"].title and events[f"points:{star[0]}"].body.endswith("Up 4.0 since the last run.")
+            # a riser at a number that plays, in none of the entered lineups: that one is sent
+            up = events[f"points:{star[0]}"]
+            assert "→" in up.title and "Up 4.0 since the last run." in up.body and up.body.endswith("He is in none of your 1 entered lineup.")
+            assert up.notify is True and up.severity == "alert" and up.url == "/lineups" and up.data["held"] == 0
 
             box = Outbox()
             out = notify_run.run(c, box.push, box.email)
-            assert (out["events"], out["to_send"], out["push_sent"], out["email_sent"]) == (3, 1, 1, 0)   # e-mail is off until switched on
-            assert box.pushes[0][1]["title"] == f"{mine[1]} is questionable" and box.mails == []
+            assert (out["events"], out["to_send"], out["push_sent"], out["email_sent"]) == (3, 2, 2, 0)   # e-mail is off until switched on
+            assert {p[1]["title"] for p in box.pushes} == {f"{mine[1]} is questionable", up.title} and box.mails == []
             with As(db_url, "authenticated", ALICE) as a:
                 assert a.execute("select count(*), count(*) filter (where kind = 'points') from public.app_events").fetchone() == (3, 1)
+
+            # a held player falling is sent too; a riser nobody entered against is only listed
+            c.execute("update bsb.projections set dk_mean = dk_mean - 4 where run_id = %s and player_id = %s", (run2, mine[0]))
+            c.commit()
+            moves = {e.player_id: e for e in detect.points_moves(c)}
+            assert moves[mine[0]].notify is True and moves[mine[0]].body.endswith("He is in 1 entered lineup.")
+            c.execute("update bsb.lineups set entered = false where set_id = %s", (sid,))
+            c.commit()
+            assert detect.points_moves(c) and all(e.notify is False for e in detect.points_moves(c))
+            c.execute("update bsb.lineups set entered = true where set_id = %s", (sid,))
+            c.execute("update bsb.projections set dk_mean = dk_mean + 4 where run_id = %s and player_id = %s", (run2, mine[0]))
+            c.commit()
 
             # cleared again → a line saying so
             c.execute(snap, (star[0], None, "0 minutes"))

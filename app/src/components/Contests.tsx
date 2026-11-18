@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useContestEntries, useContestPlayers, useContests, useDeleteContest, useImportContest, useKnownEntryIds, useSaveSettings, useSetContestMoney, useSettings } from "../lib/api";
-import { contestRecord, parseStandingsCsv, topShare, type Standings } from "../lib/contest";
+import { contestRecord, isEntryHistory, moneyFromHistory, parseEntryHistoryCsv, parseStandingsCsv, topShare, type Standings } from "../lib/contest";
 import { ago, pts, signed } from "../lib/format";
 import { useSheet } from "../lib/nav";
 import { useStore } from "../lib/store";
@@ -104,6 +104,7 @@ export function Contests() {
   const settings = useSettings();
   const saveSettings = useSaveSettings();
   const add = useImportContest();
+  const saveMoney = useSetContestMoney();
   const { say } = useStore();
   const input = useRef<HTMLInputElement>(null);
   const [editing, openMoney, closeMoney] = useSheet<number>("contest");
@@ -132,10 +133,23 @@ export function Contests() {
     if (!f) return;
     const text = await f.text();
     if (input.current) input.current.value = "";
+    if (isEntryHistory(text)) return history(text);
     const { standings, problem } = parseStandingsCsv(text, f.name, { username: s.dk_username, entryIds: known.data });
     if (!standings) return say(problem ?? "That file couldn't be read", true);
     if (standings.entries.length === 0) return setPending({ text, name: f.name, standings });
     send(standings);
+  }
+  /** DraftKings' entry history fills in the dollars for every contest on file in one go. */
+  async function history(text: string) {
+    const { rows, problem } = parseEntryHistoryCsv(text);
+    if (problem) return say(problem, true);
+    const updates = moneyFromHistory(rows, list, entries.data ?? []);
+    if (updates.length === 0) return say("None of the contests here are in that history file. Add each contest's results first.", true);
+    try {
+      for (const u of updates) await saveMoney.mutateAsync(u);
+      const n = updates.reduce((a, u) => a + Object.keys(u.winnings).length, 0);
+      say(`Dollars filled in: ${n} ${n === 1 ? "entry" : "entries"} in ${updates.length} ${updates.length === 1 ? "contest" : "contests"}`);
+    } catch (e) { say(`Couldn't save the dollars — ${(e as Error).message}`, true); }
   }
   function retry() {
     if (!pending) return;
@@ -167,7 +181,8 @@ export function Contests() {
       <div className="card card--pad stack stack--tight">
         <p className="strong">Add a contest's results</p>
         <p className="small">On the DraftKings desktop site, open a contest that has finished and choose Export Lineups to CSV, then add the file here. It is read on this device: your entries, the scores it took to place, and each player's share of lineups are what is kept.</p>
-        <input ref={input} className="input" type="file" accept=".csv,text/csv" aria-label="Contest results file" disabled={add.isPending} onChange={(e) => read(e.target.files?.[0])} />
+        <p className="small muted">For the dollars, add your entry history too (My Contests → History → Download Entry History): it fills in fees and winnings for every contest here.</p>
+        <input ref={input} className="input" type="file" accept=".csv,text/csv" aria-label="Contest results file" disabled={add.isPending || saveMoney.isPending} onChange={(e) => read(e.target.files?.[0])} />
         {add.isPending && <p className="small muted" role="status">Adding…</p>}
         {pending && (
           <div className="stack stack--tight" role="alert">

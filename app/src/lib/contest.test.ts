@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contestRecord, parseStandingsCsv, person, topShare } from "./contest";
+import { contestRecord, isEntryHistory, moneyFromHistory, parseEntryHistoryCsv, parseStandingsCsv, person, topShare } from "./contest";
 
 // The layout DraftKings documents for "Export Lineups to CSV": entries on the left, players on the right.
 const FILE = [
@@ -51,5 +51,40 @@ describe("contest results file", () => {
     const r = contestRecord([{ paid: 10, won: 18, profit: 8, n_mine: 2 }, { paid: 5, won: 0, profit: -5, n_mine: 1 }, { paid: 20, won: 0, profit: null, n_mine: 4 }, { paid: null, won: 0, profit: null, n_mine: 0 }]);
     expect(r).toMatchObject({ n: 2, open: 1, paid: 15, won: 18, profit: 3 });
     expect(r.roi).toBeCloseTo(0.2);
+  });
+});
+
+describe("DraftKings entry history: the dollars", () => {
+  const file = [
+    "Sport,Game_Type,Entry_Key,Entry,Contest_Key,Contest_Date_EST,Place,Points,Winnings_Non_Ticket,Winnings_Ticket,Contest_Entries,Entry_Fee,Prize_Pool,Places_Paid",
+    'NFL,Classic,5340594556,"NFL $500K Play-Action [20 Entry Max]",197645150,2026-11-15 13:00:00,18398,195.02,$6.00,$0.00,198176,$3.00,"$500,000.00",46000',
+    'NFL,Classic,5340594854,"NFL $500K Play-Action [20 Entry Max]",197645150,2026-11-15 13:00:00,53508,172.24,$0.00,$0.00,198176,$3.00,"$500,000.00",46000',
+    "NFL,Classic,5340633852,NFL $6K Play-Action [20 Entry Max],197862037,2026-11-15 13:00:00,1292,152.34,$0.00,$3.00,2378,$3.00,\"$6,000.00\",540",
+    "NBA,Classic,999,Some other contest,555,2026-11-01 19:00:00,4,300,$50.00,$0.00,10,$5.00,$45.00,3",
+    "",
+  ].join("\r\n");
+
+  it("tells the history file from a contest's results", () => {
+    expect(isEntryHistory(file)).toBe(true);
+    expect(isEntryHistory("Rank,EntryId,EntryName,TimeRemaining,Points,Lineup,,Player,Roster Position,%Drafted,FPTS")).toBe(false);
+    expect(parseEntryHistoryCsv("Rank,EntryId\n1,2").problem).toMatch(/entry history/);
+  });
+  it("reads fees and winnings, cash and tickets together", () => {
+    const { rows, problem } = parseEntryHistoryCsv(file);
+    expect(problem).toBeUndefined();
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toEqual({ entry_id: "5340594556", contest_key: "197645150", entry_fee: 3, won: 6, places_paid: 46000, place: 18398, contest: "NFL $500K Play-Action [20 Entry Max]" });
+    expect(rows[2].won).toBe(3);                                              // a ticket counts at its face value
+  });
+  it("fills in the contests on file and leaves the rest alone", () => {
+    const { rows } = parseEntryHistoryCsv(file);
+    const contests = [{ id: 2, contest_key: "197645150", name: null, entry_fee: null }, { id: 1, contest_key: "197862037", name: "Mine", entry_fee: 3 },
+      { id: 3, contest_key: "000", name: null, entry_fee: null }];
+    const entries = [{ contest_id: 2, entry_id: "5340594556" }, { contest_id: 2, entry_id: "5340594854" }, { contest_id: 2, entry_id: "not-in-history" },
+      { contest_id: 1, entry_id: "5340633852" }, { contest_id: 3, entry_id: "1" }];
+    expect(moneyFromHistory(rows, contests, entries)).toEqual([
+      { contest_id: 2, entry_fee: 3, name: "NFL $500K Play-Action [20 Entry Max]", winnings: { "5340594556": 6, "5340594854": 0 } },
+      { contest_id: 1, entry_fee: 3, name: "Mine", winnings: { "5340633852": 3 } },
+    ]);
   });
 });
