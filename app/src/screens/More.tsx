@@ -1,23 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Contests } from "../components/Contests";
 import { NotificationSettings } from "../components/Notifications";
-import { Empty, ErrorNote, Loading, PosTag, Stepper } from "../components/ui";
-import { DEMO, supabase, useDispatches, useJobs, usePlayerResults, usePropResults, useSaveSettings, useScorecards, useSettings } from "../lib/api";
+import { Empty, ErrorNote, Facts, Loading, MoneyField, PosTag, Stepper, Why } from "../components/ui";
+import { DEMO, supabase, useDispatches, useJobs, useModelRuns, usePlayerResults, usePropResults, useSaveSettings, useScorecards, useSettings } from "../lib/api";
 import { ago, bookName, odds, pct, pts, signed, statName, usd } from "../lib/format";
 import { decimalToAmerican } from "../lib/stake";
 import { useTitle } from "../lib/nav";
 import { useStore } from "../lib/store";
 import { DEFAULT_SETTINGS, type PlayerResult, type Settings } from "../lib/types";
 import { MODE } from "./Lineups";
-import { JOB_NAME, JOB_STATE, useAsk } from "./Week";
+import { JOB_NAME, JOB_STATE } from "./Week";
 
 export function More() {
   const items = [
-    { to: "/more/results", title: "Results", note: "How last week's numbers, lineups and bets actually did" },
-    { to: "/more/league", title: "My league", note: "Start and sit, waiver bids, and who is about to come free" },
-    { to: "/more/numbers", title: "The numbers", note: "Your own changes to expected points, and when they were last worked out" },
-    { to: "/more/settings", title: "Settings", note: "Balances, sportsbooks, salary files, sign out" },
+    { to: "/more/results", title: "Results", note: "How last week's expected points, lineups and bets actually did" },
+    { to: "/more/settings", title: "Settings", note: "Balances, sportsbooks, alerts, sign out" },
   ];
   useTitle("More");
   return (
@@ -47,7 +45,7 @@ export function Results() {
       <div><h1 className="title">Results</h1>
         <p className="small muted">Graded every Tuesday against what happened. One week proves little; the running record is what counts.</p></div>
       <Contests />
-      <div className="card__head"><h2 className="h2">Week by week</h2><span className="small muted">Numbers, lineups and bets against what happened</span></div>
+      <div className="card__head"><h2 className="h2">Week by week</h2><span className="small muted">Expected points, lineups and bets against what happened</span></div>
       {(cards.data ?? []).length === 0 && <Empty title="No week has been graded yet" why="A week is graded once all its games are final and it had expected points on file before kickoff." how="The first one lands the Tuesday after this week's games." />}
       {(cards.data ?? []).map((c) => {
         const p = c.metrics.projections, pr = c.metrics.props;
@@ -58,14 +56,14 @@ export function Results() {
               <div className="card card--pad scroll-x">
                 <p className="strong">Expected points vs what players scored</p>
                 <table className="table">
-                  <thead><tr><th>Position</th><th>Players</th><th>Average miss</th><th>Lean</th><th>Inside the range</th><th>DraftKings' average missed by</th></tr></thead>
+                  <thead><tr><th>Position</th><th className="wide-only">Players</th><th>Missed by</th><th>Lean</th><th>In range</th><th>DraftKings missed by</th></tr></thead>
                   <tbody>{Object.entries(p.by_position).map(([pos, m]) => (
-                    <tr key={pos}><td>{POSN[pos] ?? pos}</td><td className="num">{m.n}</td><td className="num strong">{pts(m.mae, 2)}</td>
+                    <tr key={pos}><td>{POSN[pos] ?? pos}</td><td className="num wide-only">{m.n}</td><td className="num strong">{pts(m.mae, 2)}</td>
                       <td className="num">{signed(m.bias, 2)}</td><td className="num">{pct(m.cover_p10_p90)}</td>
                       <td className={`num ${m.vs_dk_avg && m.vs_dk_avg.mae_model < m.vs_dk_avg.mae_dk_avg ? "good" : ""}`}>{m.vs_dk_avg ? pts(m.vs_dk_avg.mae_dk_avg, 2) : "–"}</td></tr>
                   ))}</tbody>
                 </table>
-                <p className="small muted">{p.did_not_play} players with expected points didn't play. "Inside the range" should sit near 80%. Lean above zero means the numbers ran high.</p>
+                <Why lead={`"Missed by" is the average gap, in points, between expected and scored. Green in the last column: closer than DraftKings' own average.`}>"In range" should sit near 80%. Lean above zero means expected points ran high. {p.did_not_play} players with expected points didn't play.</Why>
               </div>
             )}
             {(c.metrics.lineups ?? []).map((l) => (
@@ -160,58 +158,51 @@ export function SettingsScreen() {
   const settings = useSettings();
   const save = useSaveSettings();
   const jobs = useJobs();
+  const runs = useModelRuns();
   const dispatches = useDispatches(true);
-  const ask = useAsk();
   const { say } = useStore();
   const [draft, setDraft] = useState<Settings>(DEFAULT_SETTINGS);
-  const file = useRef<HTMLInputElement>(null);
+  const [saved, setSaved] = useState(false);
   useTitle("Settings");
-  useEffect(() => { if (settings.data) setDraft(settings.data); }, [settings.data]);
+  // what is on screen follows the server, except while a change of yours is still on its way there
+  useEffect(() => { if (settings.data && !save.isPending) setDraft(settings.data); }, [settings.data, save.isPending]);
   if (settings.isLoading) return <Loading />;
-  const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft((d) => ({ ...d, [k]: v }));
   const needsSetup = (jobs.data ?? [])[0]?.status === "needs_setup";
   const lastSent = (dispatches.data ?? []).find((d) => d.sent);
+  const lastRuns = (runs.data ?? []).slice(0, 5);
 
-  async function upload(f: File | undefined) {
-    if (!f) return;
-    const csv = await f.text();
-    if (!csv.startsWith("Position,")) return say("That isn't a DraftKings salary file — export it from a contest's draft page", true);
-    ask("import_slate", { csv, name: f.name.replace(/\.csv$/i, "") }, "Salary file sent — expected points follow in a few minutes");
-    if (file.current) file.current.value = "";
+  /** Everything here is kept the moment it changes: there is no Save button to forget. */
+  function keep(patch: Partial<Settings>, done?: string) {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    setSaved(false);
+    save.mutate(next, { onSuccess: () => { setSaved(true); if (done) say(done); }, onError: () => say("Couldn't save that — try again", true) });
   }
 
   return (
     <div className="stack">
       <div><h1 className="title">Settings</h1></div>
       <section className="card card--pad stack stack--tight" aria-label="Balances and stakes">
-        <h2 className="h2">Balances and stakes</h2>
-        <Stepper label="DraftKings balance" value={draft.balance_dfs} onChange={(v) => set("balance_dfs", v)} min={0} max={100000} step={25} format={usd} />
-        <Stepper label="Sportsbook balance" value={draft.balance_bets} onChange={(v) => set("balance_bets", v)} min={0} max={100000} step={25} format={usd} />
-        <Stepper label="Stake size (share of the full Kelly stake)" value={draft.stake_fraction} onChange={(v) => set("stake_fraction", v)} min={0.05} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} />
-        <Stepper label="Most to put on one bet" value={draft.max_stake_pct} onChange={(v) => set("max_stake_pct", v)} min={0.01} max={0.25} step={0.01} format={(v) => `${Math.round(v * 100)}% · ${usd(v * draft.balance_bets)}`} />
-        <p className="small muted">Suggested stakes on the Bets tab come from these. A quarter of the Kelly stake is the usual choice: slower growth, far smaller swings.</p>
+        <div className="card__head"><h2 className="h2">Balances and stakes</h2>
+          <span className="small muted" role="status">{save.isPending ? "Saving…" : saved ? "Saved" : "Saved as you change them"}</span></div>
+        <MoneyField label="DraftKings balance" value={draft.balance_dfs} onCommit={(v) => keep({ balance_dfs: v })} />
+        <MoneyField label="Sportsbook balance" value={draft.balance_bets} onCommit={(v) => keep({ balance_bets: v })} hint="Recording a bet does not change this: update it when your balance moves." />
+        <Stepper label="Stake size (share of the full Kelly stake)" value={draft.stake_fraction} onChange={(v) => keep({ stake_fraction: v })} min={0.05} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} />
+        <Stepper label="Most to put on one bet" value={draft.max_stake_pct} onChange={(v) => keep({ max_stake_pct: v })} min={0.01} max={0.25} step={0.01} format={(v) => `${Math.round(v * 100)}% · ${usd(v * draft.balance_bets)}`} />
+        <Why lead="Suggested stakes under Bets come from these.">A quarter of the Kelly stake is the usual choice: slower growth, far smaller swings.</Why>
         <label className="field"><span>DraftKings username</span>
-          <input className="input" type="text" autoCapitalize="off" autoCorrect="off" maxLength={40} placeholder="Finds your entries in a contest results file" value={draft.dk_username}
-            onChange={(e) => set("dk_username", e.target.value)} />
+          <input className="input" type="text" autoCapitalize="off" autoCorrect="off" maxLength={40} value={draft.dk_username}
+            onChange={(e) => setDraft({ ...draft, dk_username: e.target.value })}
+            onBlur={() => { if (draft.dk_username !== (settings.data?.dk_username ?? "")) keep({ dk_username: draft.dk_username.trim() }); }} />
+          <small className="hint">Finds your entries in a contest results file.</small>
         </label>
         <p className="eyebrow">Sportsbooks you can bet at</p>
         <div className="chips chips--wrap" role="group" aria-label="Sportsbooks">
-          {BOOKS.map((b) => <button key={b} className="chip" aria-pressed={draft.books.includes(b)} onClick={() => set("books", draft.books.includes(b) ? draft.books.filter((x) => x !== b) : [...draft.books, b])}>{bookName(b)}</button>)}
+          {BOOKS.map((b) => <button key={b} className="chip" aria-pressed={draft.books.includes(b)} onClick={() => keep({ books: draft.books.includes(b) ? draft.books.filter((x) => x !== b) : [...draft.books, b] })}>{bookName(b)}</button>)}
         </div>
-        <button className="btn btn--primary" disabled={save.isPending} onClick={() => save.mutate(draft, { onSuccess: () => say("Settings saved"), onError: () => say("Couldn't save settings — try again", true) })}>{save.isPending ? "Saving…" : "Save changes"}</button>
       </section>
 
-      <NotificationSettings draft={draft} save={(patch, done) => {
-        const next = { ...draft, ...patch };
-        setDraft(next);
-        save.mutate(next, { onSuccess: () => say(done), onError: () => say("Couldn't save that — try again", true) });
-      }} />
-
-      <section className="card card--pad stack stack--tight" aria-label="DraftKings salaries">
-        <h2 className="h2">DraftKings salaries</h2>
-        <p className="small">On a contest's draft page choose Export to CSV, then add the file here. Adding a fresher export of the same games updates prices and injury tags.</p>
-        <input ref={file} className="input" type="file" accept=".csv,text/csv" aria-label="DraftKings salary file" onChange={(e) => upload(e.target.files?.[0])} />
-      </section>
+      <NotificationSettings draft={draft} save={(patch, done) => keep(patch, done)} />
 
       <section className="card card--pad stack stack--tight" aria-label="Requests">
         <h2 className="h2">Requests from this app</h2>
@@ -222,6 +213,19 @@ export function SettingsScreen() {
             <span className={`pill ${JOB_STATE[j.status].tone}`}>{JOB_STATE[j.status].label}</span></div>
         ))}
       </section>
+
+      {lastRuns.length > 0 && (
+        <section className="card card--pad" aria-label="When expected points were worked out">
+          <div className="card__head"><h2 className="h2">Expected points</h2><span className="small muted">Last worked out {ago(lastRuns[0].created_at)}</span></div>
+          {lastRuns.map((r) => (
+            <div className="rowline" key={r.id}>
+              <div className="grow"><p className="strong">{ago(r.created_at)}</p><Facts items={[`Week ${r.week}`, r.n_players != null ? `${r.n_players} players` : null, r.n_ruled_out != null ? `${r.n_ruled_out} ruled out` : null]} /></div>
+              <span className="small muted">{r.model_version}</span>
+            </div>
+          ))}
+          <Why lead="Worked out again only when something they depend on changes.">That is a player's status, the stats, a price, or the salary file. Salary files are added under Week and Lineups.</Why>
+        </section>
+      )}
       {!DEMO && <button className="btn btn--danger" onClick={() => supabase?.auth.signOut()}>Sign out</button>}
     </div>
   );

@@ -27,11 +27,11 @@ describe("pullState", () => {
 
 describe("allowanceNote", () => {
   it("counts the spare pulls", () => {
-    expect(allowanceNote(papi({}))).toBe("13 spare pulls of player bets and sharp lines this month.");
-    expect(allowanceNote(papi({ pulls_left: 1 }))).toMatch(/^1 spare pull of/);
+    expect(allowanceNote(papi({}))).toBe("13 spare refreshes of player bets left this month.");
+    expect(allowanceNote(papi({ pulls_left: 1 }))).toMatch(/^1 spare refresh of/);
   });
-  it("says game lines still refresh when none is spare", () => {
-    expect(allowanceNote(papi({ pulls_left: 0, used: 190 }))).toMatch(/190 of 250 requests used.*still refreshes game lines/);
+  it("says game prices still refresh when none is spare", () => {
+    expect(allowanceNote(papi({ pulls_left: 0, used: 190 }))).toMatch(/190 of 250 requests used.*still updates game prices/);
   });
   it("says nothing for a feed without an allowance", () => {
     expect(allowanceNote(undefined)).toBeNull();

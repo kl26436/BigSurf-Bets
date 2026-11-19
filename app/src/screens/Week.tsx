@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { SalaryFile } from "../components/SalaryFile";
 import { Empty, ErrorNote, Facts, Fresh, Icon, Loading } from "../components/ui";
-import { useBets, useEntries, useEvents, useGames, useHealth, useJobs, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
+import { useBets, useEntries, useEvents, useGames, useHealth, usePool, usePropEdges, useQuotes, useRequestJob, useSets, useSettings } from "../lib/api";
 import { ago, kickoff, pts, signed, slateTitle } from "../lib/format";
 import { visibleSets } from "../lib/lineup";
 import { useTitle } from "../lib/nav";
@@ -10,7 +11,7 @@ import { useScratches } from "../lib/scratches";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
 import { DEFAULT_SETTINGS, type FeedHealth, type Job } from "../lib/types";
-import { goodPriceCount, nextStep, weekSteps, type Step } from "../lib/week";
+import { FEED_FIX, feedName, fixesFor, goodPriceCount, nextStep, weekSteps, type Step } from "../lib/week";
 
 const STATE: Record<FeedHealth["state"], { label: string; tone: string }> = {
   ok: { label: "Fresh", tone: "pill--ok" }, stale: { label: "Out of date", tone: "pill--warn" },
@@ -18,7 +19,7 @@ const STATE: Record<FeedHealth["state"], { label: string; tone: string }> = {
 };
 export const JOB_NAME: Record<string, string> = {
   build_lineups: "Lineup build", import_slate: "Salary upload", refresh_status: "Player status check",
-  refresh_odds: "Price refresh", refresh_stats: "Stats refresh", refresh_league: "League pull", project: "Expected points re-run", notify_test: "Test notification",
+  refresh_odds: "Refresh prices", refresh_stats: "Refresh stats", refresh_league: "Refresh league", project: "Re-run expected points", notify_test: "Test notification",
 };
 export const JOB_STATE: Record<Job["status"], { label: string; tone: string }> = {
   queued: { label: "Queued", tone: "pill--warn" }, dispatched: { label: "Starting", tone: "pill--warn" }, running: { label: "Running", tone: "pill--warn" },
@@ -38,7 +39,6 @@ export function Week() {
   const { slate } = useCurrentSlate();
   const pool = usePool(slate?.id);
   const sets = useSets(slate?.id);
-  const jobs = useJobs();
   const ask = useAsk();
   const entries = useEntries(slate?.id);
   const quotes = useQuotes();
@@ -49,6 +49,8 @@ export function Week() {
   const moved = useMoved(slate, sets.data ?? []);
   const events = useEvents();
   const [allEvents, setAllEvents] = useState(false);
+  const [showDone, setShowDone] = useState(false);
+  const [allFeeds, setAllFeeds] = useState(false);
   useTitle("This week");
   if (health.isLoading || games.isLoading) return <Loading />;
   if (health.error) return <ErrorNote error={health.error} />;
@@ -59,11 +61,11 @@ export function Week() {
   const byTotal = [...(games.data ?? [])].sort((a, b) => (b.total_line ?? 0) - (a.total_line ?? 0));
   const withPoints = (pool.data ?? []).filter((p) => p.dk_mean != null).length;
   const questionable = (pool.data ?? []).filter((p) => p.dk_mean != null && p.dk_status === "Q").length;
-  const recent = (jobs.data ?? []).filter((j) => !j.dismissed_at).slice(0, 4);
   const shown = sets.data ? visibleSets(sets.data) : null;      // the same sets the Lineups screen lists
   const steps = weekSteps({
     games: !slate ? "none" : slate.upcoming ? "upcoming" : "started",
-    staleFeeds: old.map((f) => f.label.toLowerCase()),
+    staleFeeds: old.map((f) => feedName(f).toLowerCase()),
+    staleFixes: fixesFor(old.map((f) => f.job)),
     sets: shown ? shown.auto.length + shown.mine.length : 0,
     setsOnOldNumbers: shown ? shown.mine.filter((x) => !x.on_latest_projections).length : 0,
     movedSinceEntered: moved && anyMoved(moved) ? movedLine(moved) : "",
@@ -74,7 +76,11 @@ export function Week() {
     openBets: (bets.data ?? []).filter((b) => b.result === "open").length,
   });
   const next = nextStep(steps);
-  const changed = events.data ?? [];
+  const open = steps.filter((x) => x.state !== "done");
+  const done = steps.filter((x) => x.state === "done");
+  // a player ruled out of an entered lineup is already the step above: it is not listed a second time
+  const changed = (events.data ?? []).filter((e) => !(e.kind === "scratch" && (scratches?.hit ?? 0) > 0));
+  const feedRows = allFeeds ? feeds : old;
 
   return (
     <div className="stack">
@@ -84,10 +90,20 @@ export function Week() {
       </div>
 
       <section className="card card--pad" aria-label="What to do now">
-        <div className="card__head"><h2 className="h2">{next ? "What to do now" : "You're set"}</h2>
-          <span className="small muted">{steps.filter((x) => x.state === "done").length} of {steps.length} done</span></div>
+        <div className="card__head"><h2 className="h2">{next ? "What to do now" : "You're set"}</h2></div>
         <ol className="steps">
-          {steps.map((x) => <StepRow key={x.key} step={x} next={next?.key === x.key} />)}
+          {open.map((x) => <StepRow key={x.key} step={x} next={next?.key === x.key} ask={ask} />)}
+          {done.length > 0 && (
+            <li className="step step--done step--fold">
+              <button aria-expanded={showDone} onClick={() => setShowDone(!showDone)}>
+                <span className="step__mark"><Icon name="check" /></span>
+                <span className="grow"><span className="strong block">{done.length} done</span>
+                  {!showDone && <span className="small muted ellipsis block">{done.map((x) => x.title).join(", ")}</span>}</span>
+                <span className="accent strong">{showDone ? "Hide" : "Show"}</span>
+              </button>
+            </li>
+          )}
+          {showDone && done.map((x) => <StepRow key={x.key} step={x} next={false} ask={ask} />)}
         </ol>
       </section>
 
@@ -115,43 +131,50 @@ export function Week() {
                 <h2 className="h2">{slateTitle(slate.starts_at, slate.n_games)}</h2>
                 <span className={`pill ${slate.upcoming ? "pill--accent" : ""}`}>{slate.upcoming ? `Locks ${kickoff(slate.starts_at)}` : "Started"}</span>
               </div>
-              <dl className="kv kv--3">
+              <dl className="kv">
                 <div><dt>Players</dt><dd className="big num">{withPoints || "–"}</dd></div>
                 <div><dt>Questionable</dt><dd className="big num">{questionable}</dd></div>
-                <div><dt>Lineup sets</dt><dd className="big big--accent num">{shown ? shown.auto.length + shown.mine.length : "–"}</dd></div>
               </dl>
               <p className="small muted">Salaries loaded {ago(slate.imported_at)}. {withPoints} of {slate.n_players} players have expected points; the rest are out or haven't played this season.</p>
-              <div className="inline">
-                <Link className="btn btn--primary" to="/lineups">See lineups</Link>
-                <Link className="btn" to="/players">Browse players</Link>
-              </div>
             </>
           ) : (
-            <Empty title="No DraftKings games loaded" why="Lineups need this week's salaries from a DraftKings export." how={<Link className="accent" to="/more/settings">Add a salary file</Link>} />
+            <>
+              <h2 className="h2">No DraftKings games loaded</h2>
+              <p className="small">Lineups need this week's salaries.</p>
+              <SalaryFile />
+            </>
           )}
         </section>
 
         <section className="card card--pad" aria-label="Data freshness">
-          <div className="card__head"><h2 className="h2">Is the data fresh?</h2></div>
-          {feeds.map((f) => (
-            <div className="rowline" key={f.job}>
-              <div className="grow">
-                <p className="strong">{f.label}</p>
-                <Fresh at={f.last_ok_at} label={f.last_ok_at ? "Updated" : "Not yet —"} />
+          <div className="card__head"><h2 className="h2">{old.length > 0 ? "Out of date" : "Data is fresh"}</h2>
+            <button className="btn btn--sm btn--quiet" aria-expanded={allFeeds} onClick={() => setAllFeeds(!allFeeds)}>{allFeeds ? "Show less" : `All ${feeds.length} feeds`}</button></div>
+          {old.length === 0 && !allFeeds && <p className="small muted">Stats, statuses, prices and expected points are all up to date.</p>}
+          {feedRows.map((f) => {
+            const fix = f.state !== "ok" ? FEED_FIX[f.job] : undefined;
+            return (
+              <div className="rowline" key={f.job}>
+                <div className="grow">
+                  <p className="strong">{feedName(f)}</p>
+                  <Fresh at={f.last_ok_at} label={f.state === "failing" ? "Last run failed. Last good" : f.last_ok_at ? "Updated" : "Not yet —"} />
+                </div>
+                {fix ? <button className="btn btn--sm" onClick={() => ask(fix.kind)}>{fix.action}</button>
+                  : <span className={`pill ${STATE[f.state].tone}`}>{STATE[f.state].label}</span>}
               </div>
-              <span className={`pill ${STATE[f.state].tone}`}>{STATE[f.state].label}</span>
+            );
+          })}
+          {allFeeds && (
+            <div className="inline">
+              <button className="btn btn--sm" onClick={() => ask("refresh_status")}>Check statuses</button>
+              <button className="btn btn--sm" onClick={() => ask("refresh_odds")}>Refresh prices</button>
+              <button className="btn btn--sm" onClick={() => ask("project")}>Re-run expected points</button>
             </div>
-          ))}
-          <div className="inline">
-            <button className="btn btn--sm" onClick={() => ask("refresh_status")}>Check player statuses</button>
-            <button className="btn btn--sm" onClick={() => ask("refresh_odds")}>Refresh prices</button>
-            <button className="btn btn--sm" onClick={() => ask("project")}>Re-run expected points</button>
-          </div>
+          )}
         </section>
       </div>
 
       <section aria-label="Games">
-        <div className="card__head"><h2 className="h2">Games by expected scoring</h2><span className="small muted">Team totals from the betting line</span></div>
+        <div className="card__head"><h2 className="h2">Games by expected scoring</h2><span className="small muted">Team totals from the game prices</span></div>
         {byTotal.length === 0 ? <Empty title="No games on the schedule" why="The season schedule hasn't loaded for this week." /> : (
           <div className="card">
             {byTotal.map((g) => (
@@ -169,29 +192,12 @@ export function Week() {
           </div>
         )}
       </section>
-
-      {recent.length > 0 && (
-        <section aria-label="Recent requests">
-          <div className="card__head"><h2 className="h2">Your recent requests</h2></div>
-          <div className="card">
-            {recent.map((j) => (
-              <div className="rowline" key={j.id}>
-                <div className="grow">
-                  <p className="strong">{JOB_NAME[j.kind] ?? j.kind}</p>
-                  <p className="small muted">{ago(j.created_at)}{j.error ? ` · ${j.error}` : ""}</p>
-                </div>
-                <span className={`pill ${JOB_STATE[j.status].tone}`}>{JOB_STATE[j.status].label}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
 
 const STEP_WORD: Record<Step["state"], string> = { done: "Done", todo: "To do", alert: "Needs attention", later: "Later" };
-function StepRow({ step, next }: { step: Step; next: boolean }) {
+function StepRow({ step, next, ask }: { step: Step; next: boolean; ask: (kind: string) => void }) {
   return (
     <li className={`step step--${step.state}`} aria-current={next ? "step" : undefined}>
       <span className="step__mark" title={STEP_WORD[step.state]}>
@@ -199,7 +205,8 @@ function StepRow({ step, next }: { step: Step; next: boolean }) {
         <span className="sr-only">{STEP_WORD[step.state]}: </span>
       </span>
       <div className="grow"><p className="strong">{step.title}</p><p className="small muted">{step.detail}</p></div>
-      {step.to && <Link className={`btn btn--sm ${next ? "btn--primary" : "btn--quiet"}`} to={step.to}>{step.action}</Link>}
+      {step.jobs ? <button className={`btn btn--sm ${next ? "btn--primary" : ""}`} onClick={() => step.jobs?.forEach((k) => ask(k))}>{step.action}</button>
+        : step.to && <Link className={`btn btn--sm ${next ? "btn--primary" : "btn--quiet"}`} to={step.to}>{step.action}</Link>}
     </li>
   );
 }

@@ -79,13 +79,19 @@ function ContestCard({ c, entries, edit }: { c: Contest; entries: ContestEntry[]
       <div className="card__head"><h3 className="h2">{title(c)}</h3>
         {c.n_mine > 0 && (settled ? <span className={`pill ${c.profit! > 0 ? "pill--ok" : c.profit! < 0 ? "pill--bad" : ""}`}>{c.profit! >= 0 ? "+" : ""}{usd2(c.profit)}</span> : <span className="pill pill--warn">Dollars missing</span>)}</div>
       <Facts items={[c.week ? `Week ${c.week}` : null, `${c.n_entries.toLocaleString()} entries`, c.entry_fee != null ? `${usd2(c.entry_fee)} to enter` : null, `added ${ago(c.imported_at)}`]} />
-      {entries.length === 0 ? <p className="small muted">None of your entries were found in this file. Its field and scores are still kept.</p> : entries.map((e) => (
-        <div className="rowline" key={e.entry_id}>
-          <div className="grow"><p className="strong">Place {e.rank?.toLocaleString() ?? "–"} <span className="muted">{topShare(e.rank, c.n_entries)}</span></p>
-            <p className="small muted">{e.winnings != null ? `won ${usd2(e.winnings)}` : "winnings not filled in"}{e.set_id != null ? " · " : ""}{e.set_id != null && <Link className="accent" to={`/lineups/${e.set_id}`}>see the lineup</Link>}</p></div>
-          <p className="pnum num">{pts(e.points, 2)}<small>points</small></p>
-        </div>
-      ))}
+      {entries.length === 0 ? <p className="small muted">None of your entries were found in this file. Its field and scores are still kept.</p> : entries.map((e) => {
+        // an entry that came from one of your sets opens that set: the whole row is the target, not two words in it
+        const inside = (
+          <>
+            <div className="grow"><p className="strong">Place {e.rank?.toLocaleString() ?? "–"} <span className="muted">{topShare(e.rank, c.n_entries)}</span></p>
+              <Facts items={[e.winnings != null ? `won ${usd2(e.winnings)}` : "winnings not filled in", e.set_id != null ? "see the lineup ›" : null]} /></div>
+            <p className="pnum num">{pts(e.points, 2)}<small>points</small></p>
+          </>
+        );
+        return e.set_id != null
+          ? <Link className="rowline rowline--tap" key={e.entry_id} to={`/lineups/${e.set_id}`}>{inside}</Link>
+          : <div className="rowline" key={e.entry_id}>{inside}</div>;
+      })}
       {c.scores && <Facts className="small muted num" items={[`Winner ${pts(c.scores.max)}`, `top 1% ${pts(c.scores.p99)}`, `top 10% ${pts(c.scores.p90)}`, `middle ${pts(c.scores.p50)}`]} />}
       <div className="inline">
         <button className="btn btn--sm" onClick={() => edit(c.id)}>{settled ? "Change the dollars" : "Fill in the dollars"}</button>
@@ -111,6 +117,7 @@ export function Contests() {
   // a file whose entries could not be told apart from everyone else's: waits for the username
   const [pending, setPending] = useState<{ text: string; name: string; standings: Standings } | null>(null);
   const [who, setWho] = useState("");
+  const [adding, setAdding] = useState(false);
   const s = settings.data ?? DEFAULT_SETTINGS;
   const list = contests.data ?? [];
   const byContest = useMemo(() => {
@@ -166,7 +173,8 @@ export function Contests() {
   const open = editing == null ? null : list.find((c) => c.id === editing) ?? null;
   return (
     <section className="stack stack--tight" aria-label="Contests">
-      <div className="card__head"><h2 className="h2">Contests</h2><span className="small muted">What your entries placed and paid</span></div>
+      <div className="card__head"><h2 className="h2">Contests</h2>
+        {list.length > 0 && !pending && <button className="btn btn--sm btn--quiet" aria-expanded={adding} onClick={() => setAdding(!adding)}>{adding ? "Done adding" : "Add results"}</button>}</div>
       {record.n + record.open > 0 && (
         <div className="card card--pad">
           <dl className="kv kv--3">
@@ -178,6 +186,7 @@ export function Contests() {
             record.open > 0 ? `${record.open} more ${record.open === 1 ? "needs" : "need"} dollars filled in` : null]} />
         </div>
       )}
+      {(list.length === 0 || adding || pending || add.isPending) && (
       <div className="card card--pad stack stack--tight">
         <p className="strong">Add a contest's results</p>
         <p className="small">On the DraftKings desktop site, open a contest that has finished and choose Export Lineups to CSV, then add the file here. It is read on this device: your entries, the scores it took to place, and each player's share of lineups are what is kept.</p>
@@ -197,6 +206,7 @@ export function Contests() {
           </div>
         )}
       </div>
+      )}
       {list.map((c) => <ContestCard key={c.id} c={c} entries={byContest.get(c.id) ?? []} edit={openMoney} />)}
       {list.length > 0 && <p className="small muted">A week or two of contests says little about whether the lineups win: results swing far more than that. The record worth reading is a season long.</p>}
       {open && <MoneySheet c={open} entries={byContest.get(open.id) ?? []} onClose={closeMoney} />}

@@ -40,7 +40,7 @@ export function Builder() {
   const setLineup = (l: Lineup) => setHand(l.map((p) => p?.dk_id ?? null));
 
   if (isLoading || pool.isLoading) return <Loading />;
-  if (!slate) return <Empty title="No DraftKings games loaded" why="A lineup needs this week's salaries." how={<Link className="accent" to="/more/settings">Add a salary file</Link>} />;
+  if (!slate) return <Empty title="No DraftKings games loaded" why="A lineup needs this week's salaries." how={<Link className="accent" to="/lineups">Add a salary file</Link>} />;
 
   const active = wide ? (focus != null && lineup[focus] === null ? focus : null) : picking;
   const slot = active == null ? null : SLOTS[active];
@@ -126,7 +126,8 @@ export function Builder() {
       </section>
       {!saved && (
         <label className="field"><span>Name</span>
-          <input className="input" type="text" maxLength={60} placeholder="Optional — to tell this lineup from the others" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="input" type="text" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+          <small className="hint">Optional. Tells this lineup from the others.</small>
         </label>
       )}
       <div className="sticky-cta">
@@ -168,7 +169,7 @@ export function Builder() {
                   <p className={`pnum num ${p.salary > c.left ? "bad" : ""}`}>{usd(p.salary)}<small>{pts(p.dk_mean)} expected</small></p>
                 </button>
               ))}
-              {choices.length === 0 && <p className="muted small">{everyone.length > 0 ? "Nobody here fits the budget left. Untick the box to see everyone." : "Nobody matches."}</p>}
+              {choices.length === 0 && <p className="muted small">{everyone.length > 0 ? "Nobody here fits the budget left. Clear the box to see everyone." : "Nobody matches."}</p>}
             </div>
           </div>
   );

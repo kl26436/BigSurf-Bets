@@ -75,7 +75,8 @@ h1, h2, h3, p { margin: 0; }
 .big--accent { color: var(--semantic-accent-default); }
 .strong { color: var(--semantic-text-strong); font-weight: var(--typography-weight-semibold); }
 .muted { color: var(--semantic-text-muted); }
-.small { font-size: var(--typography-size-sm); }
+/* the smallest size for anything meant to be read: the kit's small body size, not its label size */
+.small { font-size: var(--typography-size-base); }
 .num { font-variant-numeric: tabular-nums; }
 .good { color: var(--semantic-status-success); } .warn { color: var(--semantic-status-warning); } .bad { color: var(--semantic-status-danger); }
 .accent { color: var(--semantic-accent-default); }
@@ -127,7 +128,7 @@ progress.bar--over::-moz-progress-bar { background: var(--semantic-status-danger
 .tag { display: grid; place-items: center; height: 28px; border-radius: var(--radius-s); background: var(--semantic-bg-cardHi);
   font-family: var(--font-display); font-weight: var(--typography-weight-display); font-size: var(--typography-size-base); color: var(--semantic-text-main); }
 .pname { font-weight: var(--typography-weight-semibold); font-size: var(--typography-size-md); color: var(--semantic-text-strong); }
-.pmeta { font-size: var(--typography-size-sm); color: var(--semantic-text-muted); }
+.pmeta { font-size: var(--typography-size-base); color: var(--semantic-text-muted); }
 .pnum { font-weight: var(--typography-weight-bold); font-size: var(--typography-size-base); color: var(--semantic-text-strong); text-align: right; }
 .pnum small { display: block; font-weight: var(--typography-weight-medium); font-size: var(--typography-size-sm); color: var(--semantic-text-muted); }
 .add { color: var(--semantic-accent-default); font-weight: var(--typography-weight-semibold); }
@@ -313,3 +314,45 @@ button.spread { width: 100%; min-height: var(--size-tapMin); }
 .mini dt { font-size: var(--typography-size-xs); color: var(--semantic-text-muted); }
 .mini dd { margin: 0; font-size: var(--typography-size-base); font-weight: var(--typography-weight-semibold); color: var(--semantic-text-strong); }
 .prow__wide { grid-column: 1 / -1; }
+
+/* ---- views, explanations, typed amounts ---------------------------------------- */
+/* switch between the views of one screen: one row, equal widths */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--space-0-5); padding: var(--space-0-5);
+  border-radius: var(--component-control-radius); background: var(--semantic-bg-surface); border: 1px solid var(--semantic-border-soft); }
+.seg > * { display: grid; place-items: center; min-height: var(--size-tapMin); padding: 0 var(--space-2); border-radius: var(--radius-s); text-align: center;
+  font-weight: var(--typography-weight-semibold); color: var(--semantic-text-muted); }
+.seg > [aria-selected="true"], .seg > .active { background: var(--semantic-bg-cardHi); color: var(--semantic-text-strong); }
+.seg--sm { display: inline-grid; }
+.seg--sm > * { min-height: var(--size-tapSm); padding: 0 var(--space-4); font-size: var(--typography-size-base); }
+.title + .seg { margin-top: calc(var(--space-2) * -1); margin-bottom: var(--space-3); }
+@media (min-width: 960px) { .seg { display: inline-grid; } .seg > * { padding: 0 var(--space-5); } }
+/* on a phone nothing you tap is under the kit's 44px */
+@media (max-width: 959px) { .chip, .btn--sm, .seg--sm > *, .input[type="file"]::file-selector-button { min-height: var(--size-tapMin); } }
+/* "Why?" inside a sentence: a wider target than its two words, without moving the line */
+.why { padding: var(--space-2) var(--space-1); margin: calc(var(--space-2) * -1) calc(var(--space-1) * -1); color: var(--semantic-accent-default); font-weight: var(--typography-weight-semibold); }
+.money { position: relative; }
+.money > span { position: absolute; left: var(--space-3); top: 50%; transform: translateY(-50%); color: var(--semantic-text-muted); }
+.money > .input { padding-left: var(--space-6); }
+/* what a field is for goes under it, readable, not in a placeholder that vanishes */
+.field > .hint { font-size: var(--typography-size-base); color: var(--semantic-text-muted); }
+/* the week's finished steps, folded into one row */
+.step--fold { padding: 0; }
+.step--fold > button { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--size-tapMin); padding: var(--space-2) 0; }
+.step--fold .grow { min-width: 0; }
+/* a quiet link inside a sentence still gets a full-height target */
+.linkbtn { display: inline-flex; align-items: center; min-height: var(--size-tapMin); color: var(--semantic-accent-default); font-weight: var(--typography-weight-semibold); }
+/* a list of things to do with one object, in a sheet */
+.menu > * { display: flex; align-items: center; width: 100%; min-height: var(--size-control); padding: 0 var(--space-1); border-bottom: 1px solid var(--semantic-border-soft);
+  font-weight: var(--typography-weight-semibold); color: var(--semantic-text-strong); }
+.menu > *:last-child { border-bottom: 0; }
+.menu > .bad { color: var(--semantic-status-danger); }
+.menu > :disabled { opacity: 0.45; }
+/* search and filters stay in reach on a long list */
+.pinned { position: sticky; top: var(--size-headerMinHeight); z-index: var(--z-sticky); margin: 0 calc(var(--space-layout-pagePad) * -1); padding: var(--space-2) var(--space-layout-pagePad);
+  background: var(--semantic-bg-app); display: flex; flex-direction: column; gap: var(--space-2); }
+@media (min-width: 960px) { .pinned { top: 0; margin: 0; padding: var(--space-2) 0; } }
+/* a column that only earns its place on a wide screen */
+@media (max-width: 599px) { .wide-only { display: none; } }
+/* a dropdown that is only as wide as what it says, beside something else */
+select.input--auto { width: auto; max-width: 100%; flex: none; }
+.nowrap { white-space: nowrap; flex: none; }

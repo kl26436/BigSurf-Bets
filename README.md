@@ -159,7 +159,7 @@ bsb model scorecard              # grade the last finished week
   archived) plus anything marked as entered; superseded automatic sets are left out.
 - Odds snapshots: Thu 18:00, Sat 22:00, Sun 10:00, Mon 18:00 ET (props are only posted near game
   day). ≈ 125 of OddsPapi's 250 monthly requests.
-- **Pull now** (Bets and My league screens): an on-demand price pull always refreshes OddsLink's game
+- **Refresh prices** and **Refresh league** (the Bets and League screens): an on-demand price pull always refreshes OddsLink's game
   lines; it spends OddsPapi requests (props, sharp lines) only when `bsb.oddspapi_budget()` shows a
   spare pull after setting aside what the timetable still needs this month, and never twice within
   ten minutes. A second tap while a pull is on its way joins it.

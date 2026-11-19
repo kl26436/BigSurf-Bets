@@ -1,3 +1,4 @@
+import { RefreshButton } from "../components/PullNow";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Empty, ErrorNote, Loading, PosTag } from "../components/ui";
@@ -104,7 +105,7 @@ export function Swap() {
             </>
           ) : (
             <>
-              <p className="small">Add your DraftKings entries file on the Lineups screen and the app can hand back one file that edits them all. Without it, this file uploads the fixed lineups as new ones and you swap them into your entries on DraftKings.</p>
+              <p className="small">Add your DraftKings entries file under Lineups → Entries and the app can hand back one file that edits them all. Without it, this file uploads the fixed lineups as new ones and you swap them into your entries on DraftKings.</p>
               <button className="btn btn--primary" onClick={lineupFile}>Download the fixed lineups</button>
             </>
           )}
@@ -113,8 +114,8 @@ export function Swap() {
 
       {plans.length === 0 ? (
         mine.length === 0
-          ? <Empty title="No entered lineups yet" why="Mark the lineups you played as entered and this screen watches them for scratches." how={<Link className="accent" to="/lineups">Back to Lineups</Link>} />
-          : <Empty title="Nobody in these lineups is ruled out" why={seen ? `As of the numbers from ${ago(seen)}.` : undefined} how={<Link className="accent" to="/">Check player statuses on the Week tab</Link>} />
+          ? <Empty title="No entered lineups yet" why="Mark the lineups you played as entered and this screen watches them for players who are ruled out." how={<Link className="accent" to="/lineups">Back to Lineups</Link>} />
+          : <Empty title="Nobody in these lineups is ruled out" why={seen ? `As of the player statuses from ${ago(seen)}.` : undefined} how={<RefreshButton kind="refresh_status" />} />
       ) : (
         <>
           {plans.map((plan) => (
