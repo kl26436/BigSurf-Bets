@@ -531,7 +531,7 @@ export const events: AppEvent[] = [
   ...(outNow ? [{ id: 4, created_at: hoursAgo(0.4), kind: "scratch" as const, severity: "alert" as const, title: `${outNow.name} is out`,
     body: `${outNow.name} (${outNow.team}) is in 4 entered lineups.`, url: "/lineups/swap" }] : []),
   ...tagged.map((p, i) => ({ id: 3 - i, created_at: hoursAgo(3 + i * 5), kind: "status" as const, severity: "info" as const, title: `${p.name} is questionable`,
-    body: `${p.team}. He had no tag before.`, url: "/players" })),
+    body: `${p.team}. He had no tag before.`, url: "/lineups/players" })),
   ...(mover ? [{ id: 1, created_at: hoursAgo(9), kind: "points" as const, severity: "info" as const,
     title: `${mover.name}: ${((mover.dk_mean ?? 0) - 3.4).toFixed(1)} → ${(mover.dk_mean ?? 0).toFixed(1)} expected`, body: `${mover.team}. Up 3.4 since the last run.`, url: "/players" }] : []),
 ];

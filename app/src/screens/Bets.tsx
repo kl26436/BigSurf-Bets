@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BetSheet, usd2, vsFair } from "../components/BetSheet";
 import { PriceLine } from "../components/PriceLine";
-import { PullNow } from "../components/PullNow";
-import { Empty, ErrorNote, Facts, Loading, Sheet } from "../components/ui";
+import { PullNow, RefreshButton } from "../components/PullNow";
+import { Empty, ErrorNote, Facts, Loading, Sheet, Views, Why } from "../components/ui";
 import { useBets, useDeleteBet, useGradeBets, usePropEdges, useQuotes, useSettings, useSettleBet } from "../lib/api";
 import { useSheet, useTitle } from "../lib/nav";
 import { ago, bookName, kickoff, odds, pct, pts, signed, statName, usd } from "../lib/format";
@@ -25,10 +25,10 @@ const ARB_FRESH_MINUTES = 15;
 /** Below a dollar there is nothing to stake: say so instead of printing "$0". */
 const stakeNote = (stake: number) => (stake >= 1 ? `stake ${usd(stake)}` : "stake under $1 at your balance");
 
-function Stale({ at }: { at: string | null | undefined }) {
-  if (!at) return null;
-  const hours = (Date.now() - Date.parse(at)) / 3600e3;
-  return <p className={`small ${hours > 12 ? "warn" : "muted"}`} role="status">Prices seen {ago(at)}.{hours > 12 ? " They've likely moved — check the sportsbook before betting." : ""}</p>;
+/** Bets whose stake comes to under a dollar at your balance: one tap away, not in the list of bets to place. */
+function Smaller({ n, open, toggle }: { n: number; open: boolean; toggle: () => void }) {
+  if (n === 0) return null;
+  return <button className="btn btn--sm btn--quiet" aria-expanded={open} onClick={toggle}>{open ? "Hide" : "Show"} {n} smaller {n === 1 ? "edge" : "edges"} (stake under $1)</button>;
 }
 
 const fromQuote = (q: LineQuote, stake = 0): BetDraft => ({
@@ -41,8 +41,8 @@ const fromLine = (l: { player_id: string; player_name: string | null; game_id: s
   game_id: l.game_id, market: l.stat, number: l.line, outcome: side, player_id: l.player_id, fair_prob: fair, stake,
 });
 
-type View = "best" | "prices" | "price" | "mine";
-const VIEWS: Record<View, string> = { best: "Best bets", prices: "Prices", price: "Price a line", mine: "My bets" };
+type Tab = "best" | "prices" | "mine";
+const TABS: [Tab, string][] = [["best", "Best bets"], ["prices", "Prices"], ["mine", "My bets"]];
 
 export function Bets() {
   const { betsView: { view, kind }, setBetsView } = useStore();
@@ -54,35 +54,44 @@ export function Bets() {
   const s = settings.data ?? DEFAULT_SETTINGS;
   useTitle("Bets");
 
-  if (quotes.isLoading || props.isLoading) return <Loading />;
-  if (quotes.error) return <ErrorNote error={quotes.error} />;
+  const board = view === "best" || view === "prices";
+  // each view waits only for what it shows, and says so when that fails to load
+  const feed = kind === "games" ? quotes : props;
+  const seen = kind === "games" ? quotes.data?.[0]?.captured_at : props.data?.[0]?.captured_at;
 
   return (
     <div className="stack">
       <div>
         <p className="eyebrow">Sportsbooks · balance {usd(s.balance_bets)}</p>
         <h1 className="title">Bets</h1>
-        <div className="chips chips--wrap" role="group" aria-label="What to show">
-          {(Object.keys(VIEWS) as View[]).map((v) => (
-            <button key={v} className="chip" aria-pressed={view === v} onClick={() => setBetsView({ view: v })}>{VIEWS[v]}</button>
-          ))}
-        </div>
-        {(view === "best" || view === "prices") && (
-          <div className="chips chips--sub" role="group" aria-label="Kind of bet">
-            <button className="chip" aria-pressed={kind === "games"} onClick={() => setBetsView({ kind: "games" })}>Games</button>
-            <button className="chip" aria-pressed={kind === "players"} onClick={() => setBetsView({ kind: "players" })}>Players</button>
+        <Views label="What to show" value={view === "price" ? "prices" : view} onChange={(v) => setBetsView({ view: v })} options={TABS} />
+        {board && (
+          <div className="stack stack--tight">
+            <div className="spread">
+              <Views small label="Kind of bet" value={kind} onChange={(k) => setBetsView({ kind: k })} options={[["games", "Games"], ["players", "Players"]]} />
+              {view === "prices" && <button className="btn btn--sm btn--quiet" onClick={() => setBetsView({ view: "price" })}>Price a line</button>}
+            </div>
+            <PullNow kind="refresh_odds" seen={seen} />
           </div>
         )}
-        {(view === "best" || view === "prices") && <PullNow kind="refresh_odds" />}
       </div>
 
-      {view === "best" && (kind === "games"
-        ? <BestGames quotes={quotes.data ?? []} s={s} record={record} />
-        : <BestPlayers props={props.data ?? []} s={s} record={record} />)}
-      {view === "prices" && (kind === "games"
-        ? <GameBoard quotes={quotes.data ?? []} s={s} record={record} />
-        : <PlayerBoard props={props.data ?? []} s={s} record={record} />)}
-      {view === "price" && <PriceLine s={s} record={record} />}
+      {board && (feed.isLoading ? <Loading /> : feed.error ? <ErrorNote error={feed.error} /> : (
+        <>
+          {view === "best" && (kind === "games"
+            ? <BestGames quotes={quotes.data ?? []} s={s} record={record} />
+            : <BestPlayers props={props.data ?? []} s={s} record={record} />)}
+          {view === "prices" && (kind === "games"
+            ? <GameBoard quotes={quotes.data ?? []} s={s} record={record} />
+            : <PlayerBoard props={props.data ?? []} s={s} record={record} />)}
+        </>
+      ))}
+      {view === "price" && (
+        <>
+          <div><button className="btn btn--sm btn--quiet" onClick={() => setBetsView({ view: "prices" })}>‹ All prices</button></div>
+          <PriceLine s={s} record={record} />
+        </>
+      )}
       {view === "mine" && <MyBets bets={bets.data ?? []} loading={bets.isLoading} record={record} />}
 
       {draft && <BetSheet draft={draft} onClose={closeRecord} />}
@@ -110,10 +119,19 @@ function BestGames({ quotes, s, record }: { quotes: LineQuote[]; s: Settings; re
   }, [quotes, s.books]);
   const value = useMemo(() => quotes.filter((q) => (q.ev ?? 0) >= 0.01 && q.bookmaker !== "pinnacle" && mine(q.bookmaker))
     .sort((a, b) => (b.ev ?? 0) - (a.ev ?? 0)).slice(0, 25), [quotes, s.books]);
+  const [showSmall, setShowSmall] = useState(false);
+  const worth = value.filter((q) => stake(q.fair_prob, q.price_decimal) >= 1);
+  const small = value.filter((q) => stake(q.fair_prob, q.price_decimal) < 1);
+  const row = (q: LineQuote) => (
+    <button className="rowline rowline--tap" key={`${q.game_id}${q.market}${q.number}${q.outcome}${q.bookmaker}`} onClick={() => record(fromQuote(q, stake(q.fair_prob, q.price_decimal)))}>
+      <div className="grow"><p className="strong">{describe(q)}</p>
+        <Facts as="span" items={[`${q.away_team} at ${q.home_team}`, kickoff(q.kickoff_at), bookName(q.bookmaker)]} />
+        <Facts as="span" className="small muted num" items={[`true chance ${pct(q.fair_prob, 1)}`, stakeNote(stake(q.fair_prob, q.price_decimal))]} /></div>
+      <div className="right num"><p className="strong">{odds(q.price_american)}</p><p className="small good">{signed((q.ev ?? 0) * 100)}%</p></div>
+    </button>);
 
   return (
     <>
-      <Stale at={quotes[0]?.captured_at} />
       <section className="stack stack--tight" aria-label="Guaranteed profit">
         <div><h2 className="h2">Guaranteed profit</h2><p className="small muted">Two books disagree enough that backing both sides pays whatever happens.</p></div>
         {arbs.length === 0 ? <Empty title="Nothing right now" why="These gaps are rare and close within minutes. Only books you can bet at are shown." /> : arbs.map(([a, b]) => {
@@ -131,23 +149,21 @@ function BestGames({ quotes, s, record }: { quotes: LineQuote[]; s: Settings; re
                   <p className="pnum num">{odds(x.price_american)}<small>stake {usd(amt as number)}</small></p></div>;
               })}
               {gone
-                ? <p className="small warn" role="status">Seen {ago(a.captured_at)} — almost certainly gone. Refresh prices on the Week tab, then check both books before staking anything.</p>
+                ? <><p className="small warn" role="status">Seen {ago(a.captured_at)} — almost certainly gone. Refresh, then check both books before staking anything.</p><RefreshButton kind="refresh_odds" /></>
                 : <p className="small muted">Stake {usd(total)} in total this way and you're up ${split.profit.toFixed(2)} whichever side wins. Both books must still be showing these prices.</p>}
             </div>
           );
         })}
       </section>
       <section className="stack stack--tight" aria-label="Better than the sharp price">
-        <div><h2 className="h2">Better than the sharp price</h2><p className="small muted">Pinnacle's price with its margin removed is the best public estimate of the true chance. These books pay more than that. Tap one after you've placed it to record it.</p></div>
+        <div><h2 className="h2">Better than the sharp price</h2>
+          <Why lead="These books pay more than the sharp price. Tap one after you've placed it to record it.">Pinnacle's price with its margin removed is the best public estimate of the true chance.</Why></div>
         {value.length === 0 ? <Empty title="Nothing beats the sharp price by 1%" why="That's the normal state of the market." how="Prices refresh Thursday, Saturday, Sunday and Monday. Prices shows every game regardless." /> : (
-          <div className="card">{value.map((q) => (
-            <button className="rowline rowline--tap" key={`${q.game_id}${q.market}${q.number}${q.outcome}${q.bookmaker}`} onClick={() => record(fromQuote(q, stake(q.fair_prob, q.price_decimal)))}>
-              <div className="grow"><p className="strong">{describe(q)}</p>
-                <Facts as="span" items={[`${q.away_team} at ${q.home_team}`, kickoff(q.kickoff_at), bookName(q.bookmaker)]} />
-                <Facts as="span" className="small muted num" items={[`true chance ${pct(q.fair_prob, 1)}`, stakeNote(stake(q.fair_prob, q.price_decimal))]} /></div>
-              <div className="right num"><p className="strong">{odds(q.price_american)}</p><p className="small good">{signed((q.ev ?? 0) * 100)}%</p></div>
-            </button>))}
-          </div>
+          <>
+            {worth.length > 0 ? <div className="card">{worth.map(row)}</div> : <p className="small muted">Nothing here calls for a stake of $1 or more at your balance.</p>}
+            <Smaller n={small.length} open={showSmall} toggle={() => setShowSmall(!showSmall)} />
+            {showSmall && small.length > 0 && <div className="card">{small.map(row)}</div>}
+          </>
         )}
       </section>
     </>
@@ -165,34 +181,41 @@ function BestPlayers({ props, s, record }: { props: PropEdge[]; s: Settings; rec
   const modelSides = useMemo(() => sides("model"), [props, s.books]);
   return (
     <>
-      <Stale at={props[0]?.captured_at} />
       <PropList title="Better than the sharp price" note="Same bet, same number, priced above Pinnacle's fair chance." rows={fairSides} chance={(x) => x.fair} stake={kelly(s)} staked record={record}
         empty={{ title: "No player bets beat the sharp price", why: "Books post these close to game day, and most are priced tightly. Prices lists every line that is up." }} />
-      <PropList title="Where the model disagrees" note="The model's chance is unproven until the weekly results show it beats the market. Treat these as leads, not bets." rows={modelSides} chance={(x) => x.model} stake={() => 0} record={record}
+      <PropList title="Where the model disagrees" note="Leads, not bets." more="The model's chance is unproven until the weekly results show it beats the market." rows={modelSides} chance={(x) => x.model} stake={() => 0} record={record}
         empty={{ title: "No disagreements above 2%", why: "Either no player bets are posted yet or the model agrees with the books." }} />
     </>
   );
 }
 
-function PropList({ title, note, rows, chance, stake, staked = false, empty, record }: {
-  title: string; note: string; rows: Side[]; chance: (x: Side) => number | null; stake: (p: number | null, d: number | null) => number; staked?: boolean;
+function PropList({ title, note, more, rows, chance, stake, staked = false, empty, record }: {
+  title: string; note: string; more?: string; rows: Side[]; chance: (x: Side) => number | null; stake: (p: number | null, d: number | null) => number; staked?: boolean;
   empty: { title: string; why: string }; record: Record_;
 }) {
+  const [showSmall, setShowSmall] = useState(false);
+  const worth = staked ? rows.filter((x) => stake(chance(x), x.price) >= 1) : rows;
+  const small = staked ? rows.filter((x) => stake(chance(x), x.price) < 1) : [];
+  const row = (x: Side) => {
+    const st = stake(chance(x), x.price);
+    return (
+      <button className="rowline rowline--tap" key={`${x.e.player_id}${x.e.stat}${x.e.line}${x.e.bookmaker}${x.side}`}
+        onClick={() => record(fromLine(x.e, x.side === "Over" ? "over" : "under", x.e.bookmaker, x.price, x.fair, st))}>
+        <div className="grow"><p className="strong">{x.e.player_name} {x.side.toLowerCase()} {pts(x.e.line)} {statName(x.e.stat).toLowerCase()}</p>
+          <Facts as="span" items={[x.e.team, bookName(x.e.bookmaker), `model expects ${pts(x.e.proj_mean)}`]} />
+          <Facts as="span" className="small muted num" items={[`chance ${pct(chance(x), 1)}`, staked ? stakeNote(st) : null]} /></div>
+        <div className="right num"><p className="strong">{odds(decimalToAmerican(x.price))}</p><p className="small good">{signed(x.ev * 100)}%</p></div>
+      </button>);
+  };
   return (
     <section className="stack stack--tight" aria-label={title}>
-      <div><h2 className="h2">{title}</h2><p className="small muted">{note}</p></div>
+      <div><h2 className="h2">{title}</h2>{more ? <Why lead={note}>{more}</Why> : <p className="small muted">{note}</p>}</div>
       {rows.length === 0 ? <Empty title={empty.title} why={empty.why} /> : (
-        <div className="card">{rows.map((x) => {
-          const st = stake(chance(x), x.price);
-          return (
-            <button className="rowline rowline--tap" key={`${x.e.player_id}${x.e.stat}${x.e.line}${x.e.bookmaker}${x.side}`}
-              onClick={() => record(fromLine(x.e, x.side === "Over" ? "over" : "under", x.e.bookmaker, x.price, x.fair, st))}>
-              <div className="grow"><p className="strong">{x.e.player_name} {x.side.toLowerCase()} {pts(x.e.line)} {statName(x.e.stat).toLowerCase()}</p>
-                <Facts as="span" items={[x.e.team, bookName(x.e.bookmaker), `model expects ${pts(x.e.proj_mean)}`]} />
-                <Facts as="span" className="small muted num" items={[`chance ${pct(chance(x), 1)}`, staked ? stakeNote(st) : null]} /></div>
-              <div className="right num"><p className="strong">{odds(decimalToAmerican(x.price))}</p><p className="small good">{signed(x.ev * 100)}%</p></div>
-            </button>);
-        })}</div>
+        <>
+          {worth.length > 0 ? <div className="card">{worth.map(row)}</div> : <p className="small muted">Nothing here calls for a stake of $1 or more at your balance.</p>}
+          <Smaller n={small.length} open={showSmall} toggle={() => setShowSmall(!showSmall)} />
+          {showSmall && small.length > 0 && <div className="card">{small.map(row)}</div>}
+        </>
       )}
     </section>
   );
@@ -207,11 +230,10 @@ function GameBoard({ quotes, s, record }: { quotes: LineQuote[]; s: Settings; re
     for (const g of games) for (const m of g.markets) for (const side of m.sides) if (`${g.game_id}|${m.market}|${side.outcome}` === openKey) return { g, side };
     return null;
   }, [openKey, games]);
-  if (games.length === 0) return <Empty title="No prices yet" why="Game prices load on Thursday, Saturday, Sunday and Monday." how="Refresh prices from the Week tab to load them now." />;
+  if (games.length === 0) return <Empty title="No prices yet" why="Game prices load on Thursday, Saturday, Sunday and Monday." how={<RefreshButton kind="refresh_odds" />} />;
   return (
     <>
-      <Stale at={quotes[0]?.captured_at} />
-      <p className="small muted">Every game at the number most books are quoting, with the best price at a book you can bet at. Tap a price to see every book.</p>
+      <Why lead="The best price at your books for each game. Tap a price to see every book.">Each game is shown at the number most books are quoting.</Why>
       <div className="lgrid lgrid--wide">
         {games.map((g) => <GameCard key={g.game_id} g={g} open={openSide} />)}
       </div>
@@ -276,19 +298,18 @@ function PlayerBoard({ props, s, record }: { props: PropEdge[]; s: Settings; rec
   const [shown, setShown] = useState(PAGE);
   const stats = useMemo(() => [...new Set(props.map((e) => e.stat))].sort((a, b) => statName(a).localeCompare(statName(b))), [props]);
   const rows = useMemo(() => boardPlayers(props, s.books, { text, stat: stat || undefined }), [props, s.books, text, stat]);
-  if (props.length === 0) return <Empty title="No player lines yet" why="Books post these close to game day." how="Refresh prices from the Week tab to check again." />;
+  if (props.length === 0) return <Empty title="No player bets yet" why="Books post these close to game day." how={<RefreshButton kind="refresh_odds" />} />;
   return (
     <>
-      <Stale at={props[0]?.captured_at} />
       <div className="kv">
-        <input className="input" type="search" placeholder="Search a player or team" aria-label="Search player lines" value={text} onChange={(e) => { setText(e.target.value); setShown(PAGE); }} />
+        <input className="input" type="search" placeholder="Search a player or team" aria-label="Search player bets" value={text} onChange={(e) => { setText(e.target.value); setShown(PAGE); }} />
         <select className="input" aria-label="Which stat" value={stat} onChange={(e) => { setStat(e.target.value); setShown(PAGE); }}>
           <option value="">Every stat</option>
           {stats.map((k) => <option key={k} value={k}>{statName(k)}</option>)}
         </select>
       </div>
-      <p className="small muted">{rows.length} {rows.length === 1 ? "line" : "lines"} at your books, best price for each side. Tap a price after you've placed it to record it.</p>
-      {rows.length === 0 ? <Empty title="No lines match" why="None of your books has a line for that search." how="Clear the search or pick another stat." /> : (
+      <p className="small muted">{rows.length} player {rows.length === 1 ? "bet" : "bets"} at your books, best price for each side. Tap a price after you've placed it to record it.</p>
+      {rows.length === 0 ? <Empty title="Nothing matches" why="None of your books has a player bet for that search." how="Clear the search or pick another stat." /> : (
         <div className="card">
           {rows.slice(0, shown).map((l) => <LineRow key={l.key} l={l} record={record} />)}
         </div>
@@ -333,6 +354,8 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
   const open = bets.filter((b) => b.result === "open");
   const settled = bets.filter((b) => b.result !== "open");
   const picked = openId == null ? null : bets.find((b) => b.id === openId) ?? null;
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => setConfirming(false), [openId]);
   if (loading) return <Loading />;
 
   const check = () => grade.mutate(undefined, {
@@ -357,7 +380,7 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
           {r.settled === 0 ? "No settled bets yet." : `${r.won} won, ${r.lost} lost${r.returned ? `, ${r.returned} stake back` : ""}.${r.roi != null ? ` ${signed(r.roi * 100)}% on the money staked.` : ""}`}
           {r.closeAvg != null ? ` On average your prices were ${Math.abs(r.closeAvg * 100).toFixed(1)}% ${r.closeAvg >= 0 ? "better" : "worse"} than the closing price.` : ""}
         </p>
-        <p className="small muted">Beating the closing price is the early sign of an edge; a few dozen results say little. The close is the sharp book's price at the last check before kickoff, for game bets only.</p>
+        <Why lead="Beating the closing price is the early sign of an edge.">A few dozen results say little. The close is the sharp book's price at the last check before kickoff, for game bets only.</Why>
         <div className="inline">
           <button className="btn btn--primary" onClick={() => record(blank)}>Record a bet</button>
           <button className="btn" disabled={grade.isPending || open.length === 0} onClick={check}>{grade.isPending ? "Checking…" : "Check results"}</button>
@@ -391,10 +414,19 @@ function MyBets({ bets, loading, record }: { bets: Bet[]; loading: boolean; reco
               ))}
               {picked.result !== "open" && <button className="btn btn--sm btn--quiet" disabled={settle.isPending} onClick={() => set(picked, "open")}>Back to open</button>}
             </div>
-            <button className="btn btn--sm btn--quiet bad" disabled={remove.isPending}
-              onClick={() => remove.mutate({ id: picked.id }, { onSuccess: () => { say("Bet removed from your record"); closeBet(); }, onError: (e) => say(`Couldn't remove it — ${e.message}`, true) })}>
-              Remove from my record
-            </button>
+            {confirming ? (
+              <div className="card card--pad" role="alert">
+                <p className="strong">Remove this bet from your record?</p>
+                <p className="small muted">It comes out of your profit and your record, and can't be brought back.</p>
+                <div className="inline">
+                  <button className="btn btn--sm btn--danger" disabled={remove.isPending}
+                    onClick={() => remove.mutate({ id: picked.id }, { onSuccess: () => { say("Bet removed from your record"); closeBet(); }, onError: (e) => say(`Couldn't remove it — ${e.message}`, true) })}>
+                    {remove.isPending ? "Removing…" : "Remove it"}
+                  </button>
+                  <button className="btn btn--sm" onClick={() => setConfirming(false)}>Keep it</button>
+                </div>
+              </div>
+            ) : <button className="btn btn--sm btn--quiet bad" onClick={() => setConfirming(true)}>Remove from my record</button>}
           </div>
         </Sheet>
       )}

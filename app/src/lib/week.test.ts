@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { goodPriceCount, nextStep, weekSteps, type WeekFacts } from "./week";
+import { feedName, fixesFor, goodPriceCount, nextStep, weekSteps, type WeekFacts } from "./week";
 import type { LineQuote, PropEdge } from "./types";
 
 const facts = (over: Partial<WeekFacts> = {}): WeekFacts => ({ games: "upcoming", staleFeeds: [], sets: 0, setsOnOldNumbers: 0, enteredLineups: 0, entries: 0,
@@ -10,7 +10,7 @@ describe("what to do this week", () => {
   it("starts with the salary file when no games are loaded", () => {
     const steps = weekSteps(facts({ games: "none" }));
     expect(steps.map((s) => s.key)).toEqual(["salaries", "numbers"]);
-    expect(nextStep(steps)).toMatchObject({ key: "salaries", to: "/more/settings" });
+    expect(nextStep(steps)).toMatchObject({ key: "salaries", to: "/lineups" });
   });
   it("walks build → enter → entries file in order", () => {
     expect(nextStep(weekSteps(facts()))?.key).toBe("lineups");
@@ -24,6 +24,18 @@ describe("what to do this week", () => {
     const steps = weekSteps(facts({ sets: 2, enteredLineups: 5, scratched: 2, scratchedNames: ["A. One", "B. Two"], goodPrices: 3 }));
     expect(nextStep(steps)).toMatchObject({ key: "scratches", to: "/lineups/swap", detail: "A. One, B. Two", title: "2 entered lineups have a player ruled out" });
     expect(nextStep(weekSteps(facts({ staleFeeds: ["player statuses"] })))?.key).toBe("numbers");
+  });
+  it("refreshes stale numbers from the step itself", () => {
+    const fixes = fixesFor(["odds.oddslink", "odds.oddspapi", "sleeper.status", "optimizer.lineups"]);
+    expect(fixes).toEqual(["refresh_odds", "refresh_status"]);                       // each request once; nothing for a feed with no refresh
+    const step = nextStep(weekSteps(facts({ staleFeeds: ["game prices"], staleFixes: fixes })));
+    expect(step).toMatchObject({ key: "numbers", jobs: fixes, action: "Refresh", detail: "Out of date: game prices." });
+    expect(step?.to).toBeUndefined();
+    expect(feedName({ job: "odds.oddspapi", label: "Props and sharp lines" })).toBe("Player bets and sharp prices");
+    expect(feedName({ job: "something.new", label: "Something new" })).toBe("Something new");
+  });
+  it("sends the entries step to the entries view", () => {
+    expect(weekSteps(facts({ sets: 2, enteredLineups: 5 })).find((s) => s.key === "entries")?.to).toBe("/lineups/entries");
   });
   it("asks for nothing once the games have started", () => {
     expect(nextStep(weekSteps(facts({ games: "started", sets: 2 })))).toBeNull();

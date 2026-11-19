@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Entries } from "../components/Entries";
-import { GamesPicker } from "../components/GamesPicker";
+import { LineupsTop } from "../components/LineupsTop";
+import { SalaryFile } from "../components/SalaryFile";
 import { Empty, ErrorNote, Facts, Loading, Sheet, Stepper } from "../components/ui";
-import { useDismissJob, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
+import { useDismissJob, useEntries, useJobs, usePool, useRequestJob, useSets } from "../lib/api";
 import { ago, dayName, pts, slateTitle, usd } from "../lib/format";
-import { DEFAULT_MIN_SPEND, DEFAULT_PER_TEAM, buildCards, describeSettings, isShowdown, onePerPlayer, visibleSets, type BuildCard } from "../lib/lineup";
+import { DEFAULT_MIN_SPEND, DEFAULT_PER_TEAM, buildCards, isShowdown, onePerPlayer, visibleSets, type BuildCard } from "../lib/lineup";
 import { useSheet, useTitle } from "../lib/nav";
 import { useCurrentSlate } from "../lib/slate";
 import { useStore } from "../lib/store";
@@ -22,7 +23,8 @@ export const BUILD_TIME = "about a minute";
 
 function SetCard({ s }: { s: LineupSet }) {
   const sm = (s.summary ?? {}) as Record<string, number>;
-  const built = describeSettings(s);
+  // a pill only for what is out of the ordinary: the heading above already says whose set it is
+  const pills = s.entered || s.archived_at || !s.on_latest_projections;
   return (
     <Link className="card card--pad" to={`/lineups/${s.id}`}>
       <div className="card__head">
@@ -30,13 +32,13 @@ function SetCard({ s }: { s: LineupSet }) {
         <span className="small muted">{ago(s.created_at)}</span>
       </div>
       <Facts className="small" items={[`${s.n_lineups} ${s.n_lineups === 1 ? "lineup" : "lineups"}`, sm.avg_proj ? `${pts(sm.avg_proj)} expected on average` : null, sm.players_used ? `${sm.players_used} players` : null]} />
-      <Facts items={built} />
-      <div className="inline">
-        <span className="pill">{SOURCE[s.source] ?? s.source}</span>
-        {s.entered && <span className="pill pill--ok">Entered</span>}
-        {s.archived_at && <span className="pill">Archived</span>}
-        <span className={`pill ${s.on_latest_projections ? "pill--accent" : "pill--warn"}`}>{s.on_latest_projections ? "Uses the latest numbers" : "Built on older numbers"}</span>
-      </div>
+      {pills && (
+        <div className="inline">
+          {s.entered && <span className="pill pill--ok">Entered</span>}
+          {s.archived_at && <span className="pill">Archived</span>}
+          {!s.on_latest_projections && <span className="pill pill--warn">Expected points have changed</span>}
+        </div>
+      )}
     </Link>
   );
 }
@@ -93,10 +95,10 @@ function MovedAlert({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
   const n = (k: number) => `${k} ${k === 1 ? "lineup" : "lineups"}`;
   return (
     <div className="card card--pad card--warn" role="alert">
-      <p className="strong">The numbers moved after you entered</p>
+      <p className="strong">Expected points moved after you entered</p>
       {[...m.down, ...m.up].slice(0, 5).map((x) => <p key={x.dk_id} className="small num">{x.name}: {f(x.from)} → {f(x.to)} expected, in {n(x.lineups)}</p>)}
       {m.missing.map((x) => <p key={x.dk_id} className="small num">{x.name} ({x.pos}, ${x.salary.toLocaleString()}) is now one of the best values at {f(x.mean)} expected and is in none of your entered lineups</p>)}
-      <p className="small muted">Entered lineups don't change on their own. Rebuild the set, put the new lineups on your entries below, and upload the edit file before the games lock.</p>
+      <p className="small muted">Entered lineups don't change on their own. Rebuild the set, put the new lineups on your entries under Entries, and upload the edit file before the games lock.</p>
     </div>
   );
 }
@@ -107,22 +109,24 @@ export function Lineups() {
   const jobs = useJobs();
   const [building, openBuild, closeBuild] = useSheet("build");
   const [showArchived, setShowArchived] = useState(false);
+  const [addingFile, openFile, closeFile] = useSheet("salaries");
+  const entries = useEntries(slate?.id);
   useTitle("Lineups");
   if (isLoading || sets.isLoading) return <Loading />;
   if (sets.error) return <ErrorNote error={sets.error} />;
-  if (!slate) return <Empty title="No DraftKings games loaded" why="Lineups are built from this week's salaries." how={<Link className="accent" to="/more/settings">Add a salary file</Link>} />;
+  if (!slate) return <NoGames />;
 
   const all = sets.data ?? [];
   const { auto, mine, archived } = visibleSets(all);
   const requests = buildCards(jobs.data ?? [], all);
   const single = isShowdown(slate);
+  const mineEntries = entries.data ?? [];
+  const held = { total: mineEntries.length, contests: new Set(mineEntries.map((e) => e.contest_id ?? e.contest_name ?? "?")).size, withLineup: mineEntries.filter((e) => e.set_id != null).length };
 
   return (
     <div className="stack">
       <div>
-        <p className="eyebrow">DraftKings · {single ? `${dayName(slate.starts_at) || "Upcoming"} · one game, captain format` : slateTitle(slate.starts_at, slate.n_games)}</p>
-        <h1 className="title">Lineups</h1>
-        <GamesPicker />
+        <LineupsTop eyebrow={slateLine(slate)} />
         {slate.upcoming ? (
           <div className="inline">
             <button className="btn btn--primary" onClick={() => openBuild()}>Build a set</button>
@@ -137,7 +141,7 @@ export function Lineups() {
       {!single && <MovedAlert slate={slate} sets={all} />}
       {slate.upcoming && requests.map((c) => <RequestCard key={c.job.id} card={c} />)}
       <section className="stack stack--tight" aria-label="Automatic sets">
-        <p className="eyebrow">Rebuilt whenever the numbers change</p>
+        <p className="eyebrow">Automatic · rebuilt when expected points change</p>
         {auto.length === 0 ? (slate.upcoming
           ? <Empty title="No lineups yet" why="They're built right after expected points are ready for these games." how="Check back in a few minutes, or build a set yourself." />
           : <Empty title="No lineups were kept for these games" />) : auto.map((s) => <SetCard key={s.id} s={s} />)}
@@ -148,7 +152,12 @@ export function Lineups() {
           {mine.map((s) => <SetCard key={s.id} s={s} />)}
         </section>
       )}
-      {!single && <Entries slate={slate} sets={[...mine, ...auto]} />}
+      {!single && held.total > 0 && (
+        <Link className="card card--pad" to="/lineups/entries" aria-label="Your DraftKings entries">
+          <div className="card__head"><h2 className="h2">Your DraftKings entries</h2><span className="muted" aria-hidden="true">›</span></div>
+          <Facts className="small" items={[`${held.total} ${held.total === 1 ? "entry" : "entries"}`, `${held.contests} ${held.contests === 1 ? "contest" : "contests"}`, `${held.withLineup} hold one of your lineups`]} />
+        </Link>
+      )}
       {archived.length > 0 && (
         <section className="stack stack--tight" aria-label="Archived sets">
           <button className="btn btn--quiet btn--sm" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
@@ -157,7 +166,48 @@ export function Lineups() {
           {showArchived && archived.map((s) => <SetCard key={s.id} s={s} />)}
         </section>
       )}
+      <div><button className="btn btn--sm btn--quiet" onClick={() => openFile()}>Add a salary file</button></div>
       {building && <BuildSheet slateId={slate.id} single={single} onClose={closeBuild} />}
+      {addingFile && (
+        <Sheet title="Add a salary file" onClose={closeFile}>
+          <div className="stack stack--tight"><SalaryFile again /></div>
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+const slateLine = (slate: Slate) => `DraftKings · ${isShowdown(slate) ? `${dayName(slate.starts_at) || "Upcoming"} · one game, captain format` : slateTitle(slate.starts_at, slate.n_games)}`;
+
+/** No salaries loaded: the file goes in right here. */
+function NoGames() {
+  return (
+    <div className="stack">
+      <div><h1 className="title">Lineups</h1></div>
+      <section className="card card--pad" aria-label="DraftKings salaries">
+        <h2 className="h2">No DraftKings games loaded</h2>
+        <p className="small">Lineups are built from this week's salaries.</p>
+        <SalaryFile />
+      </section>
+    </div>
+  );
+}
+
+/** Your DraftKings entries, on a view of their own: which contests you are in and which lineup each entry holds. */
+export function EntriesScreen() {
+  const { slate, isLoading } = useCurrentSlate();
+  const sets = useSets(slate?.id);
+  useTitle("Entries");
+  if (isLoading || sets.isLoading) return <Loading />;
+  if (sets.error) return <ErrorNote error={sets.error} />;
+  if (!slate) return <NoGames />;
+  const { auto, mine } = visibleSets(sets.data ?? []);
+  return (
+    <div className="stack">
+      <div><LineupsTop eyebrow={slateLine(slate)} /></div>
+      {isShowdown(slate)
+        ? <Empty title="Not for one-game contests yet" why="The entries file and swaps work for the classic nine-player format." />
+        : <Entries slate={slate} sets={[...mine, ...auto]} />}
     </div>
   );
 }
@@ -205,7 +255,8 @@ function BuildSheet({ slateId, single, onClose }: { slateId: number; single: boo
         <p className="small muted">{mode === "gpp" ? (single ? "Tournaments pay the top few, so each lineup is built for a different way the game could go, with a different captain or supporting cast."
           : "Tournaments pay the top few, so lineups chase a big score: quarterback paired with his receiver, each lineup built for a different way Sunday could go.") : "50/50s and head-to-heads pay about half the field, so lineups take the highest expected points."}</p>
         <label className="field"><span>Name</span>
-          <input className="input" type="text" maxLength={60} placeholder="Optional — to tell this set from the others" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="input" type="text" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+          <small className="hint">Optional. Tells this set from the others.</small>
         </label>
         <Stepper label="Lineups" value={n} onChange={setN} min={1} max={150} step={n >= 20 ? 10 : 1} />
         <Stepper label="Most lineups any one player can be in" value={share} onChange={setShare} min={0.1} max={1} step={0.05} format={(v) => `${Math.round(v * 100)}%`} />
@@ -235,7 +286,7 @@ function BuildSheet({ slateId, single, onClose }: { slateId: number; single: boo
         )}
         </>}
         {live.length === 0 ? (
-          <p className="small muted">Nobody is locked in or left out. Mark players on the Players tab to change that.</p>
+          <p className="small muted">Nobody is locked in or left out. Mark players under Players to change that.</p>
         ) : (
           <div className="card card--pad">
             <p className="strong">{lock.length} in every lineup · {exclude.length} left out</p>

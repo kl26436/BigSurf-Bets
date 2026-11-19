@@ -5,7 +5,7 @@ who is likely to be chopped, what each free agent is worth to me, and what to bi
 
 Code: `league/guillotine.py` (maths, no database), `league/bids.py` (load / store / report),
 `ingest/sleeper_league.py` (rosters + every transaction), migration `0010_guillotine.sql`.
-App: My league → Waiver bids (`app_waiver_run`, `app_waiver_recs`).
+App: League → Waivers → Waiver bids (`app_waiver_run`, `app_waiver_recs`).
 
 ## Method
 1. Player level = this week's projection (if any) blended 50/50 with season form (60% season average, 40% last four weeks).

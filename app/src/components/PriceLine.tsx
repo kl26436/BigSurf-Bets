@@ -38,7 +38,7 @@ export function PriceLine({ s, record }: { s: Settings; record: (d: BetDraft) =>
   if (players.error) return <ErrorNote error={players.error} />;
   if (priced.length === 0) return <Empty title="No expected points yet this week" why="A price needs this week's numbers for the player." how="They arrive with the next refresh." />;
   if ((dists.data?.size ?? 0) === 0) {
-    return <Empty title="Not ready yet" why="Pricing uses figures the next refresh of the numbers saves for the first time." how="It will work after that refresh, with nothing to do here." />;
+    return <Empty title="Not ready yet" why="Pricing uses figures the next run of expected points saves for the first time." how="It will work after that refresh, with nothing to do here." />;
   }
 
   function choose(p: PoolPlayer) {

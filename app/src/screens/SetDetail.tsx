@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Sheet } from "../components/ui";
+import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Sheet, Why } from "../components/ui";
 import {
   useArchiveSet, useDeleteLineup, useDeleteSet, usePool, useRenameSet, useRequestJob, useSet, useSetEntered, useSetLineupsEntered, useSets,
 } from "../lib/api";
@@ -13,7 +13,7 @@ import type { LineupPlayer, LineupRow } from "../lib/types";
 import { download } from "./Builder";
 import { BUILD_TIME, MODE, SOURCE, setName } from "./Lineups";
 
-type SetSheet = { kind: "rename" } | { kind: "delete" } | { kind: "remove"; lineup: number } | { kind: "compare" };
+type SetSheet = { kind: "manage" } | { kind: "rename" } | { kind: "delete" } | { kind: "remove"; lineup: number } | { kind: "compare" };
 // The order to read twenty lineups in when choosing the few to enter.
 const ORDER = { built: "As built", expected: "Expected", ceiling: "Ceiling", best: "Chance of best" } as const;
 type Order = keyof typeof ORDER;
@@ -44,6 +44,7 @@ export function SetDetail() {
   const [scope, setScope] = useState<"all" | "entered">("all");
   const [sheet, openSheet, closeSheet] = useSheet<SetSheet>("set");
   const [draftName, setDraftName] = useState("");
+  const [allShares, setAllShares] = useState(false);
   const players = detail.data?.players ?? [];
   const lineups = detail.data?.lineups ?? [];
   const byLineup = useMemo(() => {
@@ -98,7 +99,7 @@ export function SetDetail() {
   }
   function setArchived(archived: boolean, leave: boolean) {
     archive.mutate({ set_id: id, archived }, {
-      onSuccess: () => { say(archived ? "Archived — it's kept for results" : "Back on the Lineups screen"); if (leave) goUp("/lineups"); },
+      onSuccess: () => { say(archived ? "Archived — it's kept for results" : "Back under Lineups"); if (leave) goUp("/lineups"); },
       onError: failed(archived ? "Couldn't archive it" : "Couldn't restore it"),
     });
   }
@@ -116,6 +117,12 @@ export function SetDetail() {
       onError: failed("Couldn't remove it"),
     });
   }
+  function markAll(entered: boolean) {
+    enterAll.mutate({ set_id: id, entered }, {
+      onSuccess: () => { say(entered ? "All marked as entered" : "Marked as not entered"); if (!entered) closeSheet(); },
+      onError: failed("Couldn't save that"),
+    });
+  }
   function markChosen(entered: boolean) {
     const nos = [...chosen];
     enterSome.mutate({ set_id: id, lineup_nos: nos, entered }, {
@@ -129,7 +136,6 @@ export function SetDetail() {
       <div>
         <p className="eyebrow">{SOURCE[set.source] ?? set.source} · built {ago(set.created_at)}</p>
         <h1 className="title">{setName(set)}</h1>
-        <Facts items={built} />
         {set.archived_at && (
           <div className="inline" role="status">
             <p className="small">Archived: hidden from Lineups, kept for results.</p>
@@ -138,30 +144,18 @@ export function SetDetail() {
         )}
         {stale && (
           <div className="inline" role="status">
-            <p className="small warn">Built on older numbers. Expected points have changed since{set.source === "auto" ? "; a fresh automatic set follows within minutes." : "."}</p>
-            {set.source === "user" && <button className="btn btn--sm" disabled={request.isPending} onClick={rebuild}>{request.isPending ? "Starting…" : "Rebuild with the same settings"}</button>}
+            <p className="small warn">Built before expected points last changed{set.source === "auto" ? "; a fresh automatic set follows within minutes." : "."}</p>
+            {set.source === "user" && <button className="btn btn--sm" disabled={request.isPending} onClick={rebuild}>{request.isPending ? "Starting…" : "Rebuild"}</button>}
           </div>
         )}
         <div className="inline">
-          <button className="btn btn--primary" onClick={() => file()}>Download all for DraftKings</button>
-          <button className="btn" disabled={enterAll.isPending} onClick={() => enterAll.mutate({ set_id: id, entered: !allEntered }, { onSuccess: () => say(allEntered ? "Marked as not entered" : "All marked as entered"), onError: failed("Couldn't save that") })}>
-            {allEntered ? "All entered — undo" : lineups.length === 1 ? "Mark as entered" : "Mark all as entered"}
-          </button>
+          <button className="btn btn--primary" onClick={() => file()}>{lineups.length === 1 ? "Download" : "Download all"}</button>
+          {allEntered
+            ? <span className="pill pill--ok" role="status">{lineups.length === 1 ? "Entered" : "All entered"}</span>
+            : <button className="btn" disabled={enterAll.isPending} onClick={() => markAll(true)}>{lineups.length === 1 ? "Mark as entered" : "Mark all as entered"}</button>}
+          <button className="btn" onClick={() => openSheet({ kind: "manage" })}>Manage</button>
         </div>
-        <p className="small muted">Upload the file on DraftKings: Lineups → Upload lineups. Nothing is entered for you. {lineups.length > 1 ? "To enter only some, tick them below." : ""}</p>
-        {yours ? (
-          <div className="inline" role="group" aria-label="Manage this set">
-            <button className="btn btn--sm btn--quiet" onClick={() => { setDraftName(set.label ?? ""); openSheet({ kind: "rename" }); }}>Rename</button>
-            <button className="btn btn--sm btn--quiet" onClick={() => openSheet({ kind: "compare" })}>Compare</button>
-            {!set.archived_at && <button className="btn btn--sm btn--quiet" disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive</button>}
-            <button className="btn btn--sm btn--quiet bad" onClick={() => openSheet({ kind: "delete" })}>Delete</button>
-          </div>
-        ) : (
-          <div className="inline">
-            <button className="btn btn--sm btn--quiet" onClick={() => openSheet({ kind: "compare" })}>Compare</button>
-            <p className="small muted">Automatic sets are replaced when the numbers change. Mark a lineup as entered to keep this one.</p>
-          </div>
-        )}
+        <Why ask="More" lead="Upload the file on DraftKings: Lineups → Upload lineups.">Nothing is entered for you. {lineups.length > 1 ? "To enter only some, select them below." : ""}</Why>
       </div>
 
       {hurt.length > 0 && (
@@ -176,11 +170,13 @@ export function SetDetail() {
       <section className="stack stack--tight" aria-label="Lineups">
         <div className="spread">
           <h2 className="h2">{lineups.length} {lineups.length === 1 ? "lineup" : "lineups"}{enteredNos.size > 0 ? ` · ${enteredNos.size} entered` : ""}</h2>
-          {lineups.length > 1 && <button className="btn btn--sm btn--quiet" onClick={() => setChosen(chosen.size === lineups.length ? new Set() : new Set(lineups.map((l) => l.lineup_no)))}>{chosen.size === lineups.length ? "Untick all" : "Tick all"}</button>}
         </div>
         {lineups.length > 1 && (
-          <div className="chips chips--wrap" role="group" aria-label="Order lineups by">
-            {(Object.keys(ORDER) as Order[]).map((k) => <button key={k} className="chip" aria-pressed={order === k} onClick={() => { setOrder(k); setOpened(undefined); }}>{ORDER[k]}</button>)}
+          <div className="spread">
+            <select className="input input--auto" aria-label="Order lineups by" value={order} onChange={(e) => { setOrder(e.target.value as Order); setOpened(undefined); }}>
+              {(Object.keys(ORDER) as Order[]).map((k) => <option key={k} value={k}>Sort: {ORDER[k]}</option>)}
+            </select>
+            <button className="btn btn--sm btn--quiet nowrap" onClick={() => setChosen(chosen.size === lineups.length ? new Set() : new Set(lineups.map((l) => l.lineup_no)))}>{chosen.size === lineups.length ? "Select none" : "Select all"}</button>
           </div>
         )}
         <div className="lgrid">
@@ -191,7 +187,7 @@ export function SetDetail() {
               <article key={l.lineup_no} className={`card lcard ${chosen.has(l.lineup_no) ? "lcard--on" : ""}`} aria-label={`Lineup ${l.lineup_no}`}>
                 <div className="spread spread--wrap">
                   <label className="check">
-                    <input type="checkbox" checked={chosen.has(l.lineup_no)} onChange={() => toggle(l.lineup_no)} aria-label={`Choose lineup ${l.lineup_no}`} />
+                    <input type="checkbox" checked={chosen.has(l.lineup_no)} onChange={() => toggle(l.lineup_no)} aria-label={`Select lineup ${l.lineup_no}`} />
                     <span className="strong">Lineup {l.lineup_no}</span>
                   </label>
                   <span className="inline">
@@ -233,7 +229,7 @@ export function SetDetail() {
           </div>
         )}
         <div className="pgrid">
-          {shares.map((e) => (
+          {(allShares ? shares : shares.slice(0, 10)).map((e) => (
             <div className="prow prow--tight" key={e.row.dk_id}>
               <PosTag pos={e.row.pos} />
               <div className="grow"><PlayerName name={e.row.name} status={outNow(e.row) ? "OUT" : poolById.get(e.row.dk_id)?.dk_status ?? e.row.status} /><Facts className="pmeta" items={[e.row.team, usd(e.row.salary), e.captain > 0 ? `captain in ${e.captain}` : null]} /></div>
@@ -241,12 +237,13 @@ export function SetDetail() {
             </div>
           ))}
         </div>
+        {shares.length > 10 && <button className="btn btn--sm btn--quiet" aria-expanded={allShares} onClick={() => setAllShares(!allShares)}>{allShares ? "Show the top 10" : `Show all ${shares.length}`}</button>}
       </section>
 
       {chosen.size > 0 && (
         <div className="sticky-cta" role="region" aria-label="Chosen lineups">
           <div className="spread">
-            <p className="small strong">{chosen.size} of {lineups.length} ticked</p>
+            <p className="small strong">{chosen.size} of {lineups.length} selected</p>
             <button className="btn btn--sm btn--quiet" onClick={() => setChosen(new Set())}>Clear</button>
           </div>
           <div className="inline inline--center">
@@ -257,6 +254,22 @@ export function SetDetail() {
         </div>
       )}
 
+      {sheet?.kind === "manage" && (
+        <Sheet title="Manage this set" onClose={closeSheet}>
+          <div className="stack stack--tight">
+            <Facts items={built} />
+            <div className="menu">
+              {set.source === "user" && <button disabled={request.isPending} onClick={rebuild}>{request.isPending ? "Starting…" : "Rebuild with the same settings"}</button>}
+              {yours && <button onClick={() => { setDraftName(set.label ?? ""); openSheet({ kind: "rename" }); }}>Rename</button>}
+              <button onClick={() => openSheet({ kind: "compare" })}>Compare with another set</button>
+              {enteredNos.size > 0 && <button disabled={enterAll.isPending} onClick={() => markAll(false)}>Mark {lineups.length === 1 ? "it" : `all ${lineups.length}`} as not entered</button>}
+              {yours && !set.archived_at && <button disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive</button>}
+              {yours && <button className="bad" onClick={() => openSheet({ kind: "delete" })}>Delete</button>}
+            </div>
+            {!yours && <p className="small muted">Automatic sets are replaced when expected points change. Mark a lineup as entered to keep this one.</p>}
+          </div>
+        </Sheet>
+      )}
       {sheet?.kind === "rename" && (
         <Sheet title="Name this set" onClose={closeSheet}>
           <form className="stack stack--tight" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
@@ -287,7 +300,7 @@ export function SetDetail() {
           <div className="stack stack--tight">
             {set.entered ? (
               <>
-                <p>It is the record of what you played, so it can't be deleted. Archiving takes it off the Lineups screen and keeps it for results.</p>
+                <p>It is the record of what you played, so it can't be deleted. Archiving takes it out of Lineups and keeps it for results.</p>
                 <p className="small muted">To delete it anyway, mark its lineups as not entered first.</p>
                 {!set.archived_at && <button className="btn btn--cta" disabled={archive.isPending} onClick={() => setArchived(true, true)}>Archive it</button>}
               </>

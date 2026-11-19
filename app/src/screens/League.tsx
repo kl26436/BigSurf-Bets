@@ -1,5 +1,6 @@
-import { PullNow } from "../components/PullNow";
-import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag } from "../components/ui";
+import { useState } from "react";
+import { PullNow, RefreshButton } from "../components/PullNow";
+import { Empty, ErrorNote, Facts, Loading, PlayerName, PosTag, Views, Why } from "../components/ui";
 import { useFreeAgents, useRoster, useWaiverRecs, useWaiverRun } from "../lib/api";
 import { ago, kickoff, pct, pts, signed, usd } from "../lib/format";
 import { lineupChanges } from "../lib/league";
@@ -135,6 +136,7 @@ export function League() {
   const free = useFreeAgents();
   const run = useWaiverRun();
   const recs = useWaiverRecs();
+  const [view, setView] = useState<"week" | "waivers" | "league">("week");
   useTitle("My league");
   if (roster.isLoading || free.isLoading || run.isLoading) return <Loading />;
   if (roster.error) return <ErrorNote error={roster.error} />;
@@ -151,31 +153,33 @@ export function League() {
   if (mine.length === 0) {
     return (
       <div className="stack">
-        <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1><PullNow kind="refresh_league" /></div>
-        <Empty title="No roster found" why="Your Sleeper roster is read every hour." how="Pull from Sleeper to read it now." />
+        <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1></div>
+        <Empty title="No roster found" why="Your Sleeper roster is read every hour." how={<RefreshButton kind="refresh_league" />} />
       </div>
     );
   }
   return (
     <div className="stack">
-      <div><p className="eyebrow">Sleeper</p><h1 className="title">My league</h1>
+      <div><p className="eyebrow">Sleeper{r ? ` · week ${r.week} · ${r.teams_left} teams left` : ""}</p><h1 className="title">My league</h1>
+        <Views label="What to show" value={view} onChange={setView} options={[["week", "This week"], ["waivers", "Waivers"], ["league", "League"]]} />
         <PullNow kind="refresh_league" />
-        <p className="small muted">Read from Sleeper every hour. Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</p></div>
+      </div>
 
-      {r && (
+      {view === "week" && r && (
         <section aria-label="Where you stand" className="stack stack--tight">
-          <div className="card__head"><h2 className="h2">Where you stand</h2><Facts as="span" items={[`Week ${r.week}`, `${r.teams_left} teams left`, `worked out ${ago(r.created_at)}`]} /></div>
+          <div className="card__head"><h2 className="h2">Where you stand</h2><span className="small muted">worked out {ago(r.created_at)}</span></div>
           <div className="card card--pad">
             <dl className="kv kv--3">
               <div><dt>Money left</dt><dd className="big num">{usd(r.budget)}</dd></div>
               <div><dt>Chopped</dt><dd className={`big num ${r.chop >= 0.15 ? "bad" : ""}`}>{pct(r.chop)}</dd></div>
               <div><dt>Win it all</dt><dd className="big big--accent num">{pct(r.win)}</dd></div>
             </dl>
-            <p className="small muted">Your chance of being chopped this week and of winning the league, as your roster stands before any pick-up.</p>
+            <Why lead="Your chances this week as your roster stands, before any pick-up.">Expected points use standard full-point-per-catch scoring. Kickers aren't modelled yet.</Why>
           </div>
         </section>
       )}
 
+      {view === "week" && (
       <section aria-label="Start and sit" className="stack stack--tight">
         <div className="card__head"><h2 className="h2">Start and sit</h2><span className="small muted num">{pts(starters.reduce((a, p) => a + (p.ppr_mean ?? 0), 0))} expected as set in Sleeper</span></div>
         {changes == null ? null : changes.length === 0 ? (
@@ -207,48 +211,56 @@ export function League() {
                 <tr key={n.spot}><td>{n.spot} <span className="muted">{n.name}</span></td><td className="num">{pts(n.mine)}</td><td className="num">{pts(n.league)}</td><td className="num bad">{signed(n.gap)}</td></tr>
               ))}</tbody>
             </table>
-            <p className="small muted">Expected points this week against the middle team still alive at the same spot. These are the spots a pick-up helps most.</p>
+            <Why lead="These are the spots a pick-up helps most.">Expected points this week against the middle team still alive at the same spot.</Why>
           </div>
         )}
       </section>
+      )}
 
-      {r?.advice && <NowOrWait a={r.advice} />}
+      {view === "waivers" && r?.advice && <NowOrWait a={r.advice} />}
 
-      {r && (
+      {view === "waivers" && r && (
         <section aria-label="Waiver bids" className="stack stack--tight">
           <div className="card__head"><h2 className="h2">Waiver bids</h2><span className="small muted">Blind auction, Wednesday morning</span></div>
           <Bids r={r} bids={bids} />
-          <div className="cols cols--2">
+          {others.length > 0 && (
             <div className="card card--pad">
-              <p className="strong">Who is in danger</p>
+              <p className="strong">Others available</p>
               <table className="table">
-                <thead><tr><th scope="col">Team</th><th scope="col">Money</th><th scope="col">Expected</th><th scope="col">Chopped</th></tr></thead>
-                <tbody>{teams.map((t) => (
-                  <tr key={t.roster_id}><td className={t.is_me ? "strong" : undefined}>{t.is_me ? "You" : t.owner}</td><td className="num">{usd(t.budget)}</td><td className="num">{pts(t.mean)}</td><td className="num">{pct(t.chop)}</td></tr>
+                <thead><tr><th scope="col">Player</th><th scope="col">Points a week</th><th scope="col">Price to win 8 in 10</th></tr></thead>
+                <tbody>{others.map((c) => (
+                  <tr key={c.sleeper_id}><td>{c.name} <span className="muted">{c.pos}</span></td><td className="num">{signed(c.gain_avg)}</td><td className="num">{usd(c.bid_80)}</td></tr>
                 ))}</tbody>
               </table>
             </div>
-            {others.length > 0 && (
-              <div className="card card--pad">
-                <p className="strong">Others available</p>
-                <table className="table">
-                  <thead><tr><th scope="col">Player</th><th scope="col">Points a week</th><th scope="col">Price to win 8 in 10</th></tr></thead>
-                  <tbody>{others.map((c) => (
-                    <tr key={c.sleeper_id}><td>{c.name} <span className="muted">{c.pos}</span></td><td className="num">{signed(c.gain_avg)}</td><td className="num">{usd(c.bid_80)}</td></tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            )}
-          </div>
-          <p className="small muted">Bids are estimates: what rivals will pay is read from their past bids and the money they have left. Chances ignore players that later chops will free up.</p>
+          )}
+          <Why lead="Bids are estimates.">What rivals will pay is read from their past bids and the money they have left. Chances ignore players that later chops will free up.</Why>
         </section>
       )}
+      {view === "waivers" && !r && <Empty title="Not worked out yet" why="Bids are worked out after your league is read." how={<RefreshButton kind="refresh_league" />} />}
 
-      {r?.coming && <Coming rows={r.coming} />}
-      {r?.grade && <PriceCheck g={r.grade} />}
+      {view === "waivers" && r?.grade && <PriceCheck g={r.grade} />}
 
+      {view === "waivers" && (
       <section aria-label="Best available players"><div className="card__head"><h2 className="h2">Best available</h2><span className="small muted">Not on any roster</span></div>
         <div className="card">{(free.data ?? []).slice(0, 20).map((p) => <RosterRow key={p.player_id ?? p.name} p={p} />)}{(free.data ?? []).length === 0 && <p className="muted small card--pad">Nobody with expected points is available.</p>}</div></section>
+      )}
+
+      {view === "league" && r && (
+        <section aria-label="Who is in danger" className="stack stack--tight">
+          <div className="card__head"><h2 className="h2">Who is in danger</h2><span className="small muted">Chance of being chopped this week</span></div>
+          <div className="card card--pad">
+            <table className="table">
+              <thead><tr><th scope="col">Team</th><th scope="col">Money</th><th scope="col">Expected</th><th scope="col">Chopped</th></tr></thead>
+              <tbody>{teams.map((t) => (
+                <tr key={t.roster_id}><td className={t.is_me ? "strong" : undefined}>{t.is_me ? "You" : t.owner}</td><td className="num">{usd(t.budget)}</td><td className="num">{pts(t.mean)}</td><td className="num">{pct(t.chop)}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
+      {view === "league" && r?.coming && <Coming rows={r.coming} />}
+      {view === "league" && !r && <Empty title="Not worked out yet" why="The league table is worked out after your league is read." how={<RefreshButton kind="refresh_league" />} />}
     </div>
   );
 }

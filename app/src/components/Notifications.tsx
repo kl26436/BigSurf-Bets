@@ -78,7 +78,7 @@ export function NotificationSettings({ draft, save }: { draft: Settings; save: (
   return (
     <section className="card card--pad stack stack--tight" aria-label="Notifications">
       <h2 className="h2">Notifications</h2>
-      <p className="small">Be told when a player in a lineup you entered is ruled out or picks up an injury tag, while there's still time to swap. Everything else that changes is listed on the Week screen.</p>
+      <p className="small">Be told when a player in a lineup you entered is ruled out or picks up an injury tag, while there's still time to swap. Everything else that changes is listed under Week.</p>
 
       <div className="stack stack--tight" role="group" aria-label="Pop-up on this device">
         <div className="spread spread--wrap"><p className="strong">Pop-up on this device</p>{on && <span className="pill pill--ok">On</span>}</div>
@@ -102,8 +102,9 @@ export function NotificationSettings({ draft, save }: { draft: Settings; save: (
           onChange={(e) => save({ notify_email_on: e.target.checked }, e.target.checked ? "E-mail alerts are on" : "E-mail alerts are off")} />E-mail me too</label>
         {draft.notify_email_on && (
           <label className="field"><span>Send to</span>
-            <input className="input" type="email" inputMode="email" autoCapitalize="off" placeholder="The address you sign in with" value={address}
+            <input className="input" type="email" inputMode="email" autoCapitalize="off" value={address}
               onChange={(e) => setAddress(e.target.value)} onBlur={saveAddress} />
+            <small className="hint">Leave it empty to use the address you sign in with.</small>
           </label>
         )}
         {draft.notify_email_on && lastMail && lastMail.status !== "sent" && (

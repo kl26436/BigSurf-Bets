@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { GamesPicker } from "../components/GamesPicker";
+import { LineupsTop } from "../components/LineupsTop";
 import { Empty, ErrorNote, Facts, Fresh, Icon, Loading, PlayerName, PosTag, RangeBar, Sheet, StatusPill } from "../components/ui";
 import { usePlayerLog, usePool, useProjections, useSetOverride } from "../lib/api";
 import { kickoff, pct, pts, signed, usd } from "../lib/format";
@@ -11,7 +11,7 @@ import type { PoolPlayer, Pos } from "../lib/types";
 
 const POSITIONS: (Pos | "ALL")[] = ["ALL", "QB", "RB", "WR", "TE", "DST"];
 const POSITIONS_ONE_GAME: (Pos | "ALL")[] = [...POSITIONS, "K"];
-const SORTS: Record<PlayerSort, string> = { points: "Expected points", value: "Points per $1,000", salary: "Price" };
+const SORTS: Record<PlayerSort, string> = { points: "Expected", value: "Per $1,000", salary: "Price" };
 type Sort = PlayerSort;
 /** One id for a row whether or not DraftKings games are loaded. */
 const rowId = (p: PoolPlayer) => p.dk_id ?? p.player_id ?? p.name;
@@ -26,7 +26,7 @@ export function Players() {
   const pool = usePool(slate?.id);
   const all = useProjections(!isLoading && !slate);          // no DraftKings games loaded: show every projected player
   // search, position and sort live in the store: leaving the screen and coming back keeps them
-  const { marks, setMark, playersView: { pos, sort, text }, setPlayersView } = useStore();
+  const { marks, setMark, playersView: { pos, sort, text, mine }, setPlayersView } = useStore();
   const [openId, openPlayer, closePlayer] = useSheet<string>("player");
   const wide = useWide();
   useTitle("Players");
@@ -35,39 +35,44 @@ export function Players() {
   const rows = useMemo(() => {
     const needle = text.trim().toLowerCase();
     const playable = onePerPlayer(source.data ?? []).filter((p) => p.dk_mean != null)
-      .filter((p) => (pos === "ALL" || p.pos === pos) && (!needle || p.name.toLowerCase().includes(needle) || p.team.toLowerCase() === needle));
+      .filter((p) => (pos === "ALL" || p.pos === pos) && (!needle || p.name.toLowerCase().includes(needle) || p.team.toLowerCase() === needle))
+      .filter((p) => !mine || p.override_dk_mean != null);
     return sortPlayers(playable, slate ? sort : "points");
-  }, [source.data, pos, sort, text, slate]);
+  }, [source.data, pos, sort, text, mine, slate]);
+  const changed = useMemo(() => onePerPlayer(source.data ?? []).filter((p) => p.override_dk_mean != null).length, [source.data]);
   const max = useMemo(() => Math.max(30, ...(source.data ?? []).map((p) => p.dk_p90 ?? 0)), [source.data]);
   const open = openId == null ? null : (source.data ?? []).find((p) => rowId(p) === openId) ?? null;
 
   if (isLoading || source.isLoading) return <Loading />;
   if (source.error) return <ErrorNote error={source.error} />;
-  const cycle = (p: PoolPlayer) => setMark(p.dk_id, marks[p.dk_id] === "lock" ? "exclude" : marks[p.dk_id] === "exclude" ? null : "lock");
+  // the icon locks and unlocks. Leaving a player out is a choice in his sheet; here a tap only undoes it.
+  const flip = (p: PoolPlayer) => setMark(p.dk_id, marks[p.dk_id] ? null : "lock");
+  const flipLabel = (p: PoolPlayer) => (marks[p.dk_id] === "lock" ? `${p.name} is in every lineup — undo` : marks[p.dk_id] === "exclude" ? `${p.name} is left out — undo` : `Put ${p.name} in every lineup`);
 
   return (
     <div className="stack stack--tight">
       <div>
-        <p className="eyebrow">{slate ? (isShowdown(slate) ? "DraftKings · one game, captain format" : `DraftKings · ${slate.n_games} games`) : "All games this week"}</p>
-        <h1 className="title">Players</h1>
-        <GamesPicker />
+        <LineupsTop eyebrow={slate ? (isShowdown(slate) ? "DraftKings · one game, captain format" : `DraftKings · ${slate.n_games} games`) : "All games this week"} />
       </div>
-      <input className="input" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setPlayersView({ text: e.target.value })} />
-      <div className="chips" role="group" aria-label="Position">
-        {(isShowdown(slate) ? POSITIONS_ONE_GAME : POSITIONS).map((p) => (
-          <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPlayersView({ pos: p })}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
-        ))}
+      <div className="pinned">
+        <div className="inline inline--row">
+          <input className="input grow" type="search" placeholder="Search a player or team" aria-label="Search players" value={text} onChange={(e) => setPlayersView({ text: e.target.value })} />
+          {slate && !wide && (
+            <select className="input input--auto" aria-label="Sort by" value={sort} onChange={(e) => setPlayersView({ sort: e.target.value as Sort })}>
+              {Object.entries(SORTS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </select>
+          )}
+        </div>
+        <div className="chips" role="group" aria-label="Position">
+          {(isShowdown(slate) ? POSITIONS_ONE_GAME : POSITIONS).map((p) => (
+            <button key={p} className="chip" aria-pressed={pos === p} onClick={() => setPlayersView({ pos: p })}>{p === "ALL" ? "All" : POS_LABEL[p]}</button>
+          ))}
+          {(changed > 0 || mine) && <button className="chip" aria-pressed={mine} onClick={() => setPlayersView({ mine: !mine })}>My numbers · {changed}</button>}
+        </div>
       </div>
-      {slate && !wide && (
-        <label className="field"><span>Sort by</span>
-          <select className="input" value={sort} onChange={(e) => setPlayersView({ sort: e.target.value as Sort })}>
-            {Object.entries(SORTS).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-          </select>
-        </label>
-      )}
       <div className="spread"><span className="small muted">{rows.length} players</span><Fresh at={source.data?.find((p) => p.projected_at)?.projected_at} /></div>
       {rows.length === 0 ? (
-        <Empty title="No players match" why="Players who are out, or haven't played this season, don't get expected points." how="Clear the search or pick another position." />
+        <Empty title="No players match" why={mine ? "You haven't set your own expected points for anyone here." : "Players who are out, or haven't played this season, don't get expected points."} how={mine ? "Open a player and use your own number." : "Clear the search or pick another position."} />
       ) : wide ? (
         <div className="card scroll-x">
           <table className="table ptable">
@@ -93,8 +98,8 @@ export function Players() {
                   <td className="num muted">{pts(p.dk_p10, 0)}</td><td className="num muted">{pts(p.dk_p90, 0)}</td>
                   <td><span className="rangecell"><RangeBar p10={p.dk_p10} p25={p.dk_p25} p50={p.dk_p50} p75={p.dk_p75} p90={p.dk_p90} max={max} /></span></td>
                   {slate && (
-                    <td><button className={`iconbtn ${marks[p.dk_id] === "lock" ? "on" : marks[p.dk_id] === "exclude" ? "off" : ""}`} onClick={(e) => { e.stopPropagation(); cycle(p); }}
-                      aria-label={marks[p.dk_id] === "lock" ? `${p.name} is in every lineup — click to leave him out` : marks[p.dk_id] === "exclude" ? `${p.name} is left out — click to clear` : `Put ${p.name} in every lineup`}>
+                    <td><button className={`iconbtn ${marks[p.dk_id] === "lock" ? "on" : marks[p.dk_id] === "exclude" ? "off" : ""}`} onClick={(e) => { e.stopPropagation(); flip(p); }}
+                      aria-label={flipLabel(p)} aria-pressed={!!marks[p.dk_id]}>
                       <Icon name={marks[p.dk_id] === "exclude" ? "ban" : "lock"} />
                     </button></td>
                   )}
@@ -115,8 +120,8 @@ export function Players() {
               <div className="rangecell"><RangeBar p10={p.dk_p10} p25={p.dk_p25} p50={p.dk_p50} p75={p.dk_p75} p90={p.dk_p90} max={max} /></div>
               <p className="pnum num">{pts(p.dk_mean)}<small>{slate ? `${pts(value(p), 2)} per $1k` : `${pts(p.dk_p10, 0)}–${pts(p.dk_p90, 0)}`}</small></p>
               {slate ? (
-                <button className={`iconbtn ${marks[p.dk_id] === "lock" ? "on" : marks[p.dk_id] === "exclude" ? "off" : ""}`} onClick={() => cycle(p)}
-                  aria-label={marks[p.dk_id] === "lock" ? `${p.name} is in every lineup — tap to leave him out` : marks[p.dk_id] === "exclude" ? `${p.name} is left out — tap to clear` : `Put ${p.name} in every lineup`}>
+                <button className={`iconbtn ${marks[p.dk_id] === "lock" ? "on" : marks[p.dk_id] === "exclude" ? "off" : ""}`} onClick={() => flip(p)}
+                  aria-label={flipLabel(p)} aria-pressed={!!marks[p.dk_id]}>
                   <Icon name={marks[p.dk_id] === "exclude" ? "ban" : "lock"} />
                 </button>
               ) : <span />}
@@ -183,6 +188,27 @@ function PlayerSheet({ p, week, max, single, onClose }: { p: PoolPlayer; week: {
           {p.anytime_td_prob != null && p.pos !== "DST" && p.pos !== "QB" ? ` Scores a touchdown ${pct(p.anytime_td_prob)} of the time.` : ""}
           {p.override_dk_mean != null ? ` You set ${pts(p.override_dk_mean)}; the model says ${pts(p.model_dk_mean)}.` : ""}
         </p>
+        {week && p.player_id && (
+          <div className="stack stack--tight">
+            <p className="eyebrow">In the next lineup build</p>
+            <div className="inline">
+              <button className={`btn btn--sm ${mark === "lock" ? "btn--primary" : ""}`} aria-pressed={mark === "lock"} onClick={() => setMark(p.dk_id, mark === "lock" ? null : "lock")}>{mark === "lock" ? "In every lineup" : "Put in every lineup"}</button>
+              <button className={`btn btn--sm ${mark === "exclude" ? "btn--danger" : ""}`} aria-pressed={mark === "exclude"} onClick={() => setMark(p.dk_id, mark === "exclude" ? null : "exclude")}>{mark === "exclude" ? "Left out" : "Leave out"}</button>
+              {!single && <button className="btn btn--sm" onClick={addToLineup}>Add to my lineup</button>}
+            </div>
+            <p className="eyebrow">Think the model is wrong? Use your own number</p>
+            <div className="inline">
+              {[-0.2, -0.1, 0.1, 0.2].map((d) => (
+                <button key={d} className="btn btn--sm" disabled={override.isPending} onClick={() => apply(base * (1 + d))}>{d > 0 ? "+" : "−"}{Math.abs(d * 100)}% · {pts(base * (1 + d))}</button>
+              ))}
+            </div>
+            <div className="inline">
+              <input className="input grow" inputMode="decimal" placeholder="Exact points" aria-label="Exact expected points" value={custom} onChange={(e) => setCustom(e.target.value)} />
+              <button className="btn btn--sm" disabled={!(Number(custom) > 0 && Number(custom) <= 80) || override.isPending} onClick={() => apply(Number(custom))}>Use it</button>
+              {p.override_dk_mean != null && <button className="btn btn--sm btn--quiet" onClick={() => apply(null)}>Use the model's</button>}
+            </div>
+          </div>
+        )}
         {stats.length > 0 && (
           <table className="table"><thead><tr><th>Expected stat line</th><th /></tr></thead>
             <tbody>{stats.map(([k, label]) => <tr key={k}><td>{label}</td><td className="num strong">{pts(Number(p[k]))}</td></tr>)}</tbody>
@@ -196,27 +222,6 @@ function PlayerSheet({ p, week, max, single, onClose }: { p: PoolPlayer; week: {
                   {p.pos === "QB" ? <td className="num">{g.passing_yards}</td> : <><td className="num">{g.carries}</td><td className="num">{g.targets}</td><td className="num">{g.receptions}</td></>}</tr>
               ))}</tbody>
             </table>
-          </div>
-        )}
-        {week && p.player_id && (
-          <div className="stack stack--tight">
-            <p className="eyebrow">Think the model is wrong? Use your own number</p>
-            <div className="inline">
-              {[-0.2, -0.1, 0.1, 0.2].map((d) => (
-                <button key={d} className="btn btn--sm" disabled={override.isPending} onClick={() => apply(base * (1 + d))}>{d > 0 ? "+" : "−"}{Math.abs(d * 100)}% · {pts(base * (1 + d))}</button>
-              ))}
-            </div>
-            <div className="inline">
-              <input className="input grow" inputMode="decimal" placeholder="Exact points" aria-label="Exact expected points" value={custom} onChange={(e) => setCustom(e.target.value)} />
-              <button className="btn btn--sm" disabled={!(Number(custom) > 0 && Number(custom) <= 80) || override.isPending} onClick={() => apply(Number(custom))}>Use it</button>
-              {p.override_dk_mean != null && <button className="btn btn--sm btn--quiet" onClick={() => apply(null)}>Use the model's</button>}
-            </div>
-            <p className="eyebrow">In the next lineup build</p>
-            <div className="inline">
-              <button className={`btn btn--sm ${mark === "lock" ? "btn--primary" : ""}`} onClick={() => setMark(p.dk_id, mark === "lock" ? null : "lock")}>{mark === "lock" ? "In every lineup" : "Put in every lineup"}</button>
-              <button className={`btn btn--sm ${mark === "exclude" ? "btn--danger" : ""}`} onClick={() => setMark(p.dk_id, mark === "exclude" ? null : "exclude")}>{mark === "exclude" ? "Left out" : "Leave out"}</button>
-              {!single && <button className="btn btn--sm" onClick={addToLineup}>Add to my lineup</button>}
-            </div>
           </div>
         )}
       </div>

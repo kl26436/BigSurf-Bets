@@ -7,12 +7,11 @@ import { useStore } from "./lib/store";
 import { Bets } from "./screens/Bets";
 import { Builder } from "./screens/Builder";
 import { Compare } from "./screens/Compare";
-import { Lineups } from "./screens/Lineups";
+import { EntriesScreen, Lineups } from "./screens/Lineups";
 import { SetDetail } from "./screens/SetDetail";
 import { Swap } from "./screens/Swap";
 import { League } from "./screens/League";
 import { More, Results, SettingsScreen } from "./screens/More";
-import { Numbers } from "./screens/Numbers";
 import { Players } from "./screens/Players";
 import { SignIn } from "./screens/SignIn";
 import { Week } from "./screens/Week";
@@ -28,16 +27,16 @@ function Brand() {
 
 const TABS = [
   { to: "/", label: "Week", icon: "week" },
-  { to: "/players", label: "Players", icon: "players" },
   { to: "/lineups", label: "Lineups", icon: "lineups" },
   { to: "/bets", label: "Bets", icon: "bets" },
+  { to: "/league", label: "League", icon: "league" },
   { to: "/more", label: "More", icon: "more" },
 ];
 
 // Screens below a tab: where "back" goes from each. The installed iPhone app has
 // no browser bar, so every one of them needs a way out that is on the screen.
 const PARENTS = [
-  { under: /^\/lineups\/.+/, to: "/lineups", label: "Lineups" },
+  { under: /^\/lineups\/(?!players$|entries$).+/, to: "/lineups", label: "Lineups" },      // Players and Entries are views of Lineups, not screens below it
   { under: /^\/more\/.+/, to: "/more", label: "More" },
 ];
 
@@ -77,8 +76,9 @@ function Shell() {
           {back && <div className="back-row">{back}</div>}
           <Routes>
             <Route path="/" element={<Week />} />
-            <Route path="/players" element={<Players />} />
             <Route path="/lineups" element={<Lineups />} />
+            <Route path="/lineups/players" element={<Players />} />
+            <Route path="/lineups/entries" element={<EntriesScreen />} />
             <Route path="/lineups/build" element={<Builder />} />
             <Route path="/lineups/swap" element={<Swap />} />
             <Route path="/lineups/compare/:a/:b" element={<Compare />} />
@@ -86,9 +86,12 @@ function Shell() {
             <Route path="/bets" element={<Bets />} />
             <Route path="/more" element={<More />} />
             <Route path="/more/results" element={<Results />} />
-            <Route path="/more/league" element={<League />} />
-            <Route path="/more/numbers" element={<Numbers />} />
+            <Route path="/league" element={<League />} />
             <Route path="/more/settings" element={<SettingsScreen />} />
+            {/* where these used to live: links in old alerts and bookmarks still land */}
+            <Route path="/players" element={<Navigate to="/lineups/players" replace />} />
+            <Route path="/more/league" element={<Navigate to="/league" replace />} />
+            <Route path="/more/numbers" element={<Navigate to="/lineups/players" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

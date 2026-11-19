@@ -5,8 +5,12 @@ import { ago, pts, usd } from "../lib/format";
 import { useStore } from "../lib/store";
 import { contestRepeats, fillContests, parseEntriesCsv, spreadRepeats, toEntriesCsv } from "../lib/swap";
 import type { DkEntry, LineupSet, Slate } from "../lib/types";
+import { Facts, Why } from "./ui";
 import { download } from "../screens/Builder";
 import { setName } from "../screens/Lineups";
+
+/** A contest with more entries than this shows them only when opened. */
+const FOLD_OVER = 6;
 
 /** Your DraftKings entries: which contests you are in and which lineup each entry
  *  holds. With them, a swap or a new lineup goes back to DraftKings as one file. */
@@ -73,68 +77,82 @@ export function Entries({ slate, sets }: { slate: Slate; sets: LineupSet[] }) {
   const inPlay = list.reduce((s, e) => s + (e.entry_fee ?? 0), 0);
   const picker = <input ref={file} className="input" type="file" accept=".csv,text/csv" aria-label="DraftKings entries file" onChange={(e) => add(e.target.files?.[0])} />;
 
+  // a contest with many entries opens on a tap: twenty dropdowns in a row is a wall, not a list
+  const [openContests, setOpenContests] = useState<Set<string>>(new Set());
+  const keyOf = (group: DkEntry[]) => group[0].contest_id ?? group[0].contest_name ?? "?";
+  const isOpen = (group: DkEntry[]) => group.length <= FOLD_OVER || openContests.has(keyOf(group));
+  const flip = (group: DkEntry[]) => setOpenContests((c) => { const n = new Set(c); const k = keyOf(group); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+
   if (entries.isLoading) return null;
+  if (list.length === 0) {
+    return (
+      <section className="card card--pad" aria-label="DraftKings entries">
+        <h2 className="h2">Add your entries file</h2>
+        <p className="small">On DraftKings: Lineups → Edit Entries → Download.</p>
+        {slate.upcoming ? picker : <p className="small muted">These games have started, so there is nothing left to edit.</p>}
+        <p className="small muted">It tells the app which contests you are in, so a late swap goes back as one file instead of entry by entry.</p>
+      </section>
+    );
+  }
   return (
     <section className="stack stack--tight" aria-label="DraftKings entries">
-      <p className="eyebrow">Your DraftKings entries</p>
-      {list.length === 0 ? (
-        <div className="card card--pad">
-          <p className="strong">Add your entries file</p>
-          <p className="small muted">On DraftKings: Lineups → Edit Entries → Download. It tells the app which contests you are in, so a late swap goes back as one file instead of entry by entry.</p>
-          {slate.upcoming && picker}
+      <div className="card card--pad">
+        <div className="card__head">
+          <h2 className="h2">{list.length} {list.length === 1 ? "entry" : "entries"} in {contests.length} {contests.length === 1 ? "contest" : "contests"}</h2>
+          <span className="small muted">Read {ago(list[0].imported_at)}</span>
         </div>
-      ) : (
-        <div className="card card--pad">
-          <div className="card__head">
-            <p className="strong">{list.length} {list.length === 1 ? "entry" : "entries"} in {contests.length} {contests.length === 1 ? "contest" : "contests"} · {usd(inPlay)} in play</p>
-            <span className="small muted">Read {ago(list[0].imported_at)}</span>
+        <Facts className="small" items={[`${usd(inPlay)} in play`, `${held} of ${list.length} hold one of your lineups`]} />
+        <div className="inline">
+          <button className="btn btn--primary" disabled={held === 0} onClick={editFile}>Download the edit file</button>
+          <Link className="btn" to="/lineups/swap">Swap out players</Link>
+        </div>
+        <Why ask="More" lead="Upload the edit file on DraftKings: Lineups → Edit Entries → Upload.">A lineup put on an entry is marked as entered. Entries with no lineup of yours are left out of the file.</Why>
+        {slate.upcoming && held < list.length && (
+          <div className="inline inline--row">
+            <select className="input grow" value={fillFrom} aria-label="Fill the empty entries from" onChange={(e) => setFillFrom(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">Fill the {list.length - held} empty from…</option>
+              {sets.map((s) => <option key={s.id} value={s.id}>{setName(s)} · {s.n_lineups} {s.n_lineups === 1 ? "lineup" : "lineups"}</option>)}
+            </select>
+            <button className="btn" disabled={fillFrom === "" || assign.isPending} onClick={fill}>Fill</button>
           </div>
-          <p className="small">{held} of {list.length} hold one of your lineups.{held < list.length ? " The rest are left out of the edit file." : ""}</p>
-          {wasted > 0 && (
-            <div className="card card--pad card--warn" role="alert">
-              <p className="strong">{wasted} {wasted === 1 ? "entry repeats" : "entries repeat"} a lineup in the same contest</p>
-              {repeats.map((c) => (
-                <p key={c.contest} className="small">{c.name ?? "Contest"}: {c.repeats.map((r) => `lineup ${r.lineup_no} ×${r.entries.length}`).join(", ")}</p>
-              ))}
-              <p className="small muted">A repeat can only tie itself, and the lineup it replaced never plays. Spread them out, then download the edit file and upload it on DraftKings before lock.</p>
-              {slate.upcoming && <button className="btn btn--primary" disabled={assign.isPending || many.isLoading} onClick={spread}>Spread them out</button>}
-            </div>
-          )}
-          {contests.map((group) => (
-            <div key={group[0].contest_id ?? group[0].contest_name} className="stack stack--tight">
-              <p className="small strong">{group[0].contest_name ?? "Contest"}{group[0].entry_fee != null ? ` · ${usd(group[0].entry_fee)}` : ""}</p>
-              {group.map((e) => (
-                <label className="field" key={e.entry_id}>
-                  <span>Entry …{e.entry_id.slice(-6)}</span>
-                  <select className="input" value={e.set_id != null ? `${e.set_id}:${e.lineup_no}` : ""} disabled={assign.isPending || !slate.upcoming} onChange={(ev) => put(e, ev.target.value)}>
-                    <option value="">{e.players ? "A lineup that isn't one of yours" : "No lineup yet"}</option>
-                    {sets.map((s) => (
-                      <optgroup key={s.id} label={setName(s)}>
-                        {lineups.filter((l) => l.set_id === s.id).map((l) => <option key={l.lineup_no} value={`${s.id}:${l.lineup_no}`}>{setName(s)} · Lineup {l.lineup_no} · {pts(l.proj)} expected</option>)}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
+        )}
+      </div>
+      {wasted > 0 && (
+        <div className="card card--pad card--warn" role="alert">
+          <p className="strong">{wasted} {wasted === 1 ? "entry repeats" : "entries repeat"} a lineup in the same contest</p>
+          {repeats.map((c) => (
+            <p key={c.contest} className="small">{c.name ?? "Contest"}: {c.repeats.map((r) => `lineup ${r.lineup_no} ×${r.entries.length}`).join(", ")}</p>
           ))}
-          {slate.upcoming && held < list.length && (
-            <div className="inline">
-              <select className="input grow" value={fillFrom} aria-label="Fill the empty entries from" onChange={(e) => setFillFrom(e.target.value ? Number(e.target.value) : "")}>
-                <option value="">Fill the empty entries from…</option>
-                {sets.map((s) => <option key={s.id} value={s.id}>{setName(s)} · {s.n_lineups} {s.n_lineups === 1 ? "lineup" : "lineups"}</option>)}
-              </select>
-              <button className="btn" disabled={fillFrom === "" || assign.isPending} onClick={fill}>Fill</button>
-            </div>
-          )}
-          <div className="inline">
-            <button className="btn btn--primary" disabled={held === 0} onClick={editFile}>Download the edit file</button>
-            <Link className="btn" to="/lineups/swap">Check for scratches</Link>
-          </div>
-          <p className="small muted">Upload the edit file on DraftKings: Lineups → Edit Entries → Upload. A lineup put on an entry is marked as entered.</p>
-          {slate.upcoming && <label className="field"><span>Add a newer entries file</span>{picker}</label>}
+          <p className="small muted">A repeat can only tie itself, and the lineup it replaced never plays. Spread them out, then download the edit file and upload it on DraftKings before lock.</p>
+          {slate.upcoming && <button className="btn btn--primary" disabled={assign.isPending || many.isLoading} onClick={spread}>Spread them out</button>}
         </div>
       )}
+      {contests.map((group) => {
+        const mine = group.filter((e) => e.set_id != null).length;
+        const open = isOpen(group);
+        return (
+          <div key={keyOf(group)} className="card card--pad">
+            <h3 className="strong">{group[0].contest_name ?? "Contest"}</h3>
+            <Facts className="small muted" items={[group[0].entry_fee != null ? `${usd(group[0].entry_fee)} each` : null, `${group.length} ${group.length === 1 ? "entry" : "entries"}`,
+              mine === group.length ? "all hold a lineup" : `${group.length - mine} without a lineup`]} />
+            {group.length > FOLD_OVER && <button className="btn btn--sm" aria-expanded={open} onClick={() => flip(group)}>{open ? "Hide the entries" : `Show the ${group.length} entries`}</button>}
+            {open && group.map((e) => (
+              <label className="field" key={e.entry_id}>
+                <span>Entry …{e.entry_id.slice(-6)}</span>
+                <select className="input" value={e.set_id != null ? `${e.set_id}:${e.lineup_no}` : ""} disabled={assign.isPending || !slate.upcoming} onChange={(ev) => put(e, ev.target.value)}>
+                  <option value="">{e.players ? "A lineup that isn't one of yours" : "No lineup yet"}</option>
+                  {sets.map((s) => (
+                    <optgroup key={s.id} label={setName(s)}>
+                      {lineups.filter((l) => l.set_id === s.id).map((l) => <option key={l.lineup_no} value={`${s.id}:${l.lineup_no}`}>{setName(s)} · Lineup {l.lineup_no} · {pts(l.proj)} expected</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+        );
+      })}
+      {slate.upcoming && <div className="card card--pad"><label className="field"><span>Add a newer entries file</span>{picker}</label></div>}
     </section>
   );
 }

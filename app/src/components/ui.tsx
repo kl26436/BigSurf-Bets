@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { NavLink } from "react-router-dom";
 import { ago, statusLabel } from "../lib/format";
 import { POS_LABEL } from "../lib/lineup";
 import type { Pos } from "../lib/types";
@@ -74,6 +75,62 @@ export function RangeBar({ p10, p25, p50, p75, p90, max }: { p10: number | null;
   );
 }
 
+/** A line of explanation whose first sentence stays on screen; the rest is one tap away. */
+export function Why({ lead, children, className = "small muted", ask = "Why?" }: { lead: ReactNode; children: ReactNode; className?: string; ask?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <p className={className}>
+      {lead}{" "}
+      <button className="why" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Less" : ask}</button>
+      {open && <span className="why__more"> {children}</span>}
+    </p>
+  );
+}
+
+/** Switch between the views of one screen: one row, equal widths. Chips are for filters and picks. */
+export function Views<T extends string>({ label, value, onChange, options, small = false }: {
+  label: string; value: T; onChange: (v: T) => void; options: [T, string][]; small?: boolean;
+}) {
+  return (
+    <div className={`seg${small ? " seg--sm" : ""}`} role="tablist" aria-label={label}>
+      {options.map(([v, text]) => <button key={v} role="tab" aria-selected={value === v} onClick={() => onChange(v)}>{text}</button>)}
+    </div>
+  );
+}
+
+/** The same switch when each view has its own address. */
+export function ViewLinks({ label, links }: { label: string; links: [string, string][] }) {
+  return (
+    <nav className="seg" aria-label={label}>
+      {links.map(([to, text], i) => <NavLink key={to} to={to} end={i === 0}>{text}</NavLink>)}
+    </nav>
+  );
+}
+
+/** A dollar amount you type. It is kept when you leave the field or press Enter. */
+export function MoneyField({ label, value, onCommit, max = 1_000_000, hint }: { label: string; value: number; onCommit: (v: number) => void; max?: number; hint?: string }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const commit = () => {
+    const v = Number(text.replace(/[$,\s]/g, ""));
+    if (text.trim() === "" || !Number.isFinite(v)) return setText(String(value));
+    const clean = Math.round(Math.min(max, Math.max(0, v)) * 100) / 100;
+    setText(String(clean));
+    if (clean !== value) onCommit(clean);
+  };
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <div className="money">
+        <span aria-hidden="true">$</span>
+        <input className="input num" type="text" inputMode="decimal" autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} />
+      </div>
+      {hint && <small className="hint">{hint}</small>}
+    </label>
+  );
+}
+
 export function Fresh({ at, label }: { at: string | null | undefined; label?: string }) {
   return <span className="small muted">{label ?? "Updated"} {ago(at)}</span>;
 }
@@ -146,6 +203,7 @@ const ICONS: Record<string, ReactNode> = {
   back: <path d="M15 5l-7 7 7 7" />,
   check: <path d="M5 12.500l4.500 4.500L19 7.500" />,
   alert: <path d="M12 6v8M12 18v.010" />,
+  league: <><path d="M8 4h8v5a4 4 0 01-8 0V4zM8 6H5a3 3 0 003 3M16 6h3a3 3 0 01-3 3M12 13v4M8.500 20h7" /></>,
 };
 export function Icon({ name }: { name: keyof typeof ICONS | string }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true">{ICONS[name]}</svg>;

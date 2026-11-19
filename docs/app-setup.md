@@ -37,7 +37,7 @@ Lineup builds, refreshes and salary uploads run as GitHub workflows. The databas
    ```sql
    select vault.create_secret('PASTE_THE_TOKEN_HERE', 'github_pat');
    ```
-3. In the app: Week → **Check player statuses**. Settings → "Requests from this app" should show it reached GitHub (answer 204).
+3. In the app: Week → All feeds → **Check statuses**. Settings → "Requests from this app" should show it reached GitHub (answer 204).
 
 The same token switches on the database timetable (`0007_scheduler.sql`), which fires on the minute. Without it the
 workflows' own cron lines still run, a few minutes late and occasionally not at all — which is why `Feed health`

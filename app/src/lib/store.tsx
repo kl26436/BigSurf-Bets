@@ -6,7 +6,7 @@ import type { Pos } from "./types";
 
 export type Mark = "lock" | "exclude";
 export type PlayerSort = "points" | "value" | "salary";
-export interface PlayersView { pos: Pos | "ALL"; sort: PlayerSort; text: string }
+export interface PlayersView { pos: Pos | "ALL"; sort: PlayerSort; text: string; /** only players whose expected points you set yourself */ mine: boolean }
 export interface BetsView { view: "best" | "prices" | "price" | "mine"; kind: "games" | "players" }
 /** The hand-built lineup as it was last saved: the same nine again is not saved twice. */
 export interface SavedHand { key: string; setId: number; label: string | null }
@@ -45,7 +45,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [hand, setHandState] = useState<(string | null)[]>(() => load("bsb-hand", EMPTY));
   const [savedHand, setSavedHand] = useState<SavedHand | null>(() => load("bsb-saved-hand", null));
   // kept for the session, not across launches: a filter left on from last week hides players
-  const [playersView, setView] = useState<PlayersView>({ pos: "ALL", sort: "points", text: "" });
+  const [playersView, setView] = useState<PlayersView>({ pos: "ALL", sort: "points", text: "", mine: false });
   const [betsView, setBets] = useState<BetsView>({ view: "best", kind: "games" });
   const [slateId, setSlateId] = useState<number | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
